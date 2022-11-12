@@ -1,6 +1,8 @@
 //! The simplest possible example that does something.
 #![allow(clippy::unnecessary_wraps)]
 
+use std::path::PathBuf;
+
 use ggez::{event, glam::*, graphics, input, Context};
 use rex::Room;
 
@@ -12,8 +14,8 @@ struct MainState {
 }
 
 impl MainState {
-    fn new(ctx: &mut Context) -> anyhow::Result<MainState> {
-        let room = rex::generate(&std::env::current_dir()?, Vec2::ZERO)?;
+    fn new(path: &std::path::Path, ctx: &mut Context) -> anyhow::Result<MainState> {
+        let room = rex::generate(path, Vec2::ZERO)?;
         let mut builder = graphics::MeshBuilder::new();
         build_mesh(&mut builder, &room)?;
 
@@ -78,6 +80,12 @@ impl event::EventHandler<anyhow::Error> for MainState {
 pub fn main() -> anyhow::Result<()> {
     let cb = ggez::ContextBuilder::new("super_simple", "ggez");
     let (mut ctx, event_loop) = cb.build()?;
-    let state = MainState::new(&mut ctx)?;
+    let state = MainState::new(
+        &std::env::args()
+            .nth(1)
+            .map(|arg| PathBuf::from(arg))
+            .unwrap_or_else(|| std::env::current_dir().unwrap().to_owned()),
+        &mut ctx,
+    )?;
     event::run(ctx, event_loop, state)
 }
