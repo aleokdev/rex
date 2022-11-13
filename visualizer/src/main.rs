@@ -10,7 +10,7 @@ struct MainState {
     pos: Vec2,
     scale: f32,
     mesh: graphics::Mesh,
-    mesh_producer: mpsc::Receiver<graphics::MeshBuilder>,
+    mesh_producer: Option<mpsc::Receiver<graphics::MeshBuilder>>,
 }
 
 impl MainState {
@@ -54,7 +54,7 @@ impl MainState {
                     indices: &[],
                 },
             ),
-            mesh_producer: rx,
+            mesh_producer: Some(rx),
         })
     }
 }
@@ -102,8 +102,13 @@ impl event::EventHandler<anyhow::Error> for MainState {
             let x: Vec2 = ctx.mouse.delta().into();
             self.pos -= x / self.scale;
         }
-        if let Ok(mesh) = self.mesh_producer.try_recv() {
-            self.mesh = graphics::Mesh::from_data(ctx, mesh.build());
+
+        if let Some(rx) = &mut self.mesh_producer {
+            match rx.try_recv() {
+                Ok(mesh) => self.mesh = graphics::Mesh::from_data(ctx, mesh.build()),
+                Err(mpsc::TryRecvError::Empty) => (),
+                Err(mpsc::TryRecvError::Disconnected) => self.mesh_producer = None,
+            }
         }
         Ok(())
     }
@@ -118,6 +123,16 @@ impl event::EventHandler<anyhow::Error> for MainState {
                 .offset(self.pos)
                 .scale(Vec2::splat(self.scale)),
         );
+
+        let mut text = graphics::Text::new("Press R to restart task");
+
+        text.set_bounds(canvas.screen_coordinates().unwrap().size())
+            .set_layout(graphics::TextLayout {
+                h_align: graphics::TextAlign::End,
+                v_align: graphics::TextAlign::End,
+            });
+
+        canvas.draw(&text, graphics::DrawParam::default());
 
         canvas.finish(ctx)?;
 
