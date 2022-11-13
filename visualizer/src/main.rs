@@ -39,7 +39,7 @@ fn build_mesh(builder: &mut graphics::MeshBuilder, room: &Room) -> anyhow::Resul
     for child in &room.children {
         builder.line(
             &[room.mesh[0], child.mesh[0]],
-            0.05,
+            3.,
             graphics::Color::from_rgba_u32(0xFFFFFF50),
         )?;
         build_mesh(builder, child)?;

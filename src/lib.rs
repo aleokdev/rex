@@ -89,10 +89,10 @@ pub fn generate_v2(path: &Path) -> Result<Room> {
 
     // Force-Directed Drawing Algorithm
     // https://cs.brown.edu/people/rtamassi/gdhandbook/chapters/force-directed.pdf (12.8)
-    const C: f32 = 1.;
-    const K: f32 = 3.;
-    const T_0: f32 = 100.;
-    const TOL: f32 = 0.1;
+    const C: f32 = 0.01;
+    const K: f32 = 20.;
+    const T_0: f32 = K;
+    const TOL: f32 = 0.001;
 
     fn f_g(x: f32, w: f32) -> f32 {
         -C * w * K * K / x
@@ -101,7 +101,7 @@ pub fn generate_v2(path: &Path) -> Result<Room> {
         (x - K) / d - f_g(x, w)
     }
     fn cool(t: f32) -> f32 {
-        t * 9. / 10.
+        t * 0.95
     }
 
     let mut t = T_0;
@@ -111,7 +111,10 @@ pub fn generate_v2(path: &Path) -> Result<Room> {
         let mut converged = true;
         let mut loss = 0.;
 
+        let oldposn = newposn.clone();
+
         for v in 0..nodes.len() {
+            let v_node = &nodes[v];
             let mut d = emath::Vec2::ZERO;
             // Calculate global (repulsive) forces
             for u in 0..nodes.len() {
@@ -122,14 +125,16 @@ pub fn generate_v2(path: &Path) -> Result<Room> {
                 if delta.length() <= 0. {
                     continue;
                 }
-                d += delta.normalized() * f_g(delta.length(), newposn[u].to_vec2().length());
+                d += delta.normalized() * f_g(delta.length(), nodes[u].children.len() as f32 + 1.);
             }
             // Calculate local (spring) forces
             for u in 0..nodes.len() {
-                if u == v {
-                    continue;
-                }
-                if (newposn[u] - newposn[v]).length() > 50. {
+                let u_node = &nodes[u];
+                // Only match connected nodes
+                if u == v
+                    || !(matches!(&u_node.parent, Some(path) if path == &v_node.path)
+                        || u_node.children.contains(&v_node.path))
+                {
                     continue;
                 }
 
@@ -140,21 +145,19 @@ pub fn generate_v2(path: &Path) -> Result<Room> {
                 d += delta.normalized()
                     * f_l(
                         delta.length(),
-                        newposn[v].to_vec2().length().max(0.01),
-                        newposn[u].to_vec2().length(),
+                        v_node.children.len() as f32 + 1.,
+                        u_node.children.len() as f32 + 1.,
                     );
             }
             // Reposition v
-            let newpos = newposn[v] + d.normalized() * t.min(d.length());
-            let delta = newpos - newposn[v];
-            newposn[v] = newpos;
+            newposn[v] = newposn[v] + d.normalized() * t.min(d.length());
+            let delta = newposn[v] - oldposn[v];
             if delta.length() > K * TOL {
                 loss += delta.length() - K * TOL;
                 converged = false;
             }
         }
 
-        log::info!("A");
         log::info!("T: {}, Loss: {}", t, loss);
         t = cool(t);
 
