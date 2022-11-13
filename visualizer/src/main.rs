@@ -3,7 +3,7 @@
 
 use std::path::PathBuf;
 
-use ggez::{event, glam::*, graphics, input, Context};
+use ggez::{conf::WindowMode, event, glam::*, graphics, input, Context};
 use rex::Room;
 
 struct MainState {
@@ -15,13 +15,13 @@ struct MainState {
 
 impl MainState {
     fn new(path: &std::path::Path, ctx: &mut Context) -> anyhow::Result<MainState> {
-        let room = rex::generate(path, Vec2::ZERO)?;
+        let room = rex::generate_v2(path)?;
         let mut builder = graphics::MeshBuilder::new();
         build_mesh(&mut builder, &room)?;
 
         Ok(MainState {
             pos: Default::default(),
-            scale: 1.,
+            scale: 10.,
             room,
             mesh: graphics::Mesh::from_data(ctx, builder.build()),
         })
@@ -29,17 +29,19 @@ impl MainState {
 }
 
 fn build_mesh(builder: &mut graphics::MeshBuilder, room: &Room) -> anyhow::Result<()> {
-    builder.polygon(
+    builder.circle(
         graphics::DrawMode::Fill(graphics::FillOptions::default()),
-        &room.mesh,
+        room.mesh[0],
+        0.1,
+        0.01,
         graphics::Color::RED,
     )?;
-    builder.polygon(
-        graphics::DrawMode::Stroke(graphics::StrokeOptions::default()),
-        &room.mesh,
-        graphics::Color::BLUE,
-    )?;
     for child in &room.children {
+        builder.line(
+            &[room.mesh[0], child.mesh[0]],
+            0.05,
+            graphics::Color::from_rgba_u32(0xFFFFFF50),
+        )?;
         build_mesh(builder, child)?;
     }
 
@@ -57,7 +59,7 @@ impl event::EventHandler<anyhow::Error> for MainState {
 
     fn draw(&mut self, ctx: &mut Context) -> anyhow::Result<()> {
         let mut canvas =
-            graphics::Canvas::from_frame(ctx, graphics::Color::from([0.1, 0.2, 0.3, 1.0]));
+            graphics::Canvas::from_frame(ctx, graphics::Color::from([0.12, 0.0, 0.21, 1.0]));
 
         canvas.draw(
             &self.mesh,
@@ -78,7 +80,9 @@ impl event::EventHandler<anyhow::Error> for MainState {
 }
 
 pub fn main() -> anyhow::Result<()> {
-    let cb = ggez::ContextBuilder::new("super_simple", "ggez");
+    env_logger::init();
+    let cb = ggez::ContextBuilder::new("super_simple", "ggez")
+        .window_mode(WindowMode::default().dimensions(1920., 1080.));
     let (mut ctx, event_loop) = cb.build()?;
     let state = MainState::new(
         &std::env::args()
