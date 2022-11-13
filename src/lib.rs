@@ -52,8 +52,8 @@ fn generate_inner(path: &Path, top_left: emath::Pos2) -> Result<(Room, f32)> {
 pub struct Node {
     pos: emath::Pos2,
     path: PathBuf,
-    parent: Option<PathBuf>,
-    children: Vec<PathBuf>,
+    parent: Option<usize>,
+    children: Vec<usize>,
 }
 
 impl Node {
@@ -73,23 +73,26 @@ pub fn generate_nodes(path: &Path) -> Result<Vec<Node>> {
         children: vec![],
     }];
 
-    while let Some(mut node_being_processed) = to_process.pop() {
+    while let Some(node_being_processed) = to_process.pop() {
+        let node_being_processed_idx = nodes.len();
+
+        if let Some(parent) = node_being_processed.parent {
+            nodes[parent].children.push(node_being_processed_idx);
+        }
+
         for dir_entry in fs::read_dir(&node_being_processed.path)? {
             let dir_entry = dir_entry?;
+
             if dir_entry.file_type()?.is_dir() {
-                node_being_processed.children.push(dir_entry.path());
                 to_process.push(Node {
                     pos: emath::pos2(rng.gen_range(-100.0..100.0), rng.gen_range(-100.0..100.0)),
                     path: dir_entry.path(),
-                    parent: Some(node_being_processed.path.clone()),
+                    parent: Some(node_being_processed_idx),
                     children: vec![],
                 });
             }
         }
         nodes.push(node_being_processed);
-        if to_process.len() % 1000 == 0 {
-            log::info!("Left to process: {}", to_process.len());
-        }
     }
 
     Ok(nodes)
@@ -141,29 +144,25 @@ impl<'nodes> ForceDirectedDrawing<'nodes> {
             let v_node = &self.nodes[v];
             let mut d = emath::Vec2::ZERO;
             // Calculate global (repulsive) forces
-            for u in 0..self.nodes.len() {
+            for (u, u_node) in self.nodes.iter().enumerate() {
                 if u == v {
                     continue;
                 }
-                let delta = self.nodes[u].pos - self.nodes[v].pos;
+                let delta = u_node.pos - v_node.pos;
                 if delta.length() <= 0. {
                     continue;
                 }
-                d += delta.normalized()
-                    * f_g(delta.length(), self.nodes[u].children.len() as f32 + 1.);
+                d += delta.normalized() * f_g(delta.length(), u_node.children.len() as f32 + 1.);
             }
             // Calculate local (spring) forces
-            for u in 0..self.nodes.len() {
-                let u_node = &self.nodes[u];
-                // Only match connected nodes
-                if u == v
-                    || !(matches!(&u_node.parent, Some(path) if path == &v_node.path)
-                        || u_node.children.contains(&v_node.path))
-                {
-                    continue;
-                }
-
-                let delta = self.nodes[u].pos - self.nodes[v].pos;
+            for (_, u_node) in self.nodes.iter().enumerate().filter(|(u, u_node)| {
+                // Is not v
+                u != &v
+                // & v is u's parent or child
+                    && (matches!(&u_node.parent, Some(parent) if parent == &v)
+                        || u_node.children.contains(&v))
+            }) {
+                let delta = u_node.pos - v_node.pos;
                 if delta.length() <= 0. {
                     continue;
                 }
@@ -175,8 +174,9 @@ impl<'nodes> ForceDirectedDrawing<'nodes> {
                     );
             }
             // Reposition v
-            self.nodes[v].pos = self.nodes[v].pos + d.normalized() * self.t.min(d.length());
-            let delta = self.nodes[v].pos - oldposn[v];
+            let v_node = &mut self.nodes[v];
+            v_node.pos += d.normalized() * self.t.min(d.length());
+            let delta = v_node.pos - oldposn[v];
             if delta.length() > K * TOL {
                 loss += delta.length() - K * TOL;
                 converged = false;
@@ -206,21 +206,28 @@ impl<'nodes> ForceDirectedDrawing<'nodes> {
 }
 
 pub fn nodes_to_room(nodes: Vec<Node>, root: &Path) -> Room {
-    let mut map: HashMap<PathBuf, Node> = HashMap::with_capacity(nodes.len());
-    for node in nodes {
-        map.insert(node.path.clone(), node);
-    }
-
-    fn build(map: &HashMap<PathBuf, Node>, path: &Path) -> Room {
-        let node = &map[path];
+    fn build(nodes: &Vec<Node>, idx: usize) -> Room {
+        let node = &nodes[idx];
         Room {
             path: node.path.clone(),
-            children: node.children.iter().map(|conn| build(map, conn)).collect(),
+            children: node
+                .children
+                .iter()
+                .map(|&child| build(nodes, child))
+                .collect(),
             mesh: vec![node.pos],
         }
     }
 
-    build(&map, root)
+    build(
+        &nodes,
+        nodes
+            .iter()
+            .enumerate()
+            .find(|(_, node)| node.path == root)
+            .unwrap()
+            .0,
+    )
 }
 
 pub fn generate_v2(path: &Path) -> Result<Room> {
