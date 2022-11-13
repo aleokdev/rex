@@ -1,7 +1,7 @@
 //! The simplest possible example that does something.
 #![allow(clippy::unnecessary_wraps)]
 
-use std::path::PathBuf;
+use std::{ops::ControlFlow, path::PathBuf, sync::mpsc, thread};
 
 use ggez::{conf::WindowMode, event, glam::*, graphics, input, Context};
 use rex::Room;
@@ -10,25 +10,73 @@ struct MainState {
     pos: Vec2,
     scale: f32,
     mesh: graphics::Mesh,
-    room: rex::Room,
+    mesh_producer: mpsc::Receiver<graphics::MeshBuilder>,
 }
 
 impl MainState {
     fn new(path: &std::path::Path, ctx: &mut Context) -> anyhow::Result<MainState> {
-        let room = rex::generate_v2(path)?;
-        let mut builder = graphics::MeshBuilder::new();
-        build_mesh(&mut builder, &room)?;
+        let mut nodes = rex::generate_nodes(path)?;
+        let (tx, rx) = mpsc::channel();
+        let path = path.to_owned();
+        thread::spawn(move || {
+            let start = std::time::Instant::now();
+            let mut fdd = rex::ForceDirectedDrawing::new(&mut nodes);
+
+            loop {
+                match fdd.iterate() {
+                    ControlFlow::Break(_) => break,
+                    ControlFlow::Continue(loss) => {
+                        let mut builder = graphics::MeshBuilder::new();
+                        build_nodes_mesh(&mut builder, fdd.nodes());
+                        tx.send(builder).unwrap();
+                        log::info!("T: {}, Loss: {}", fdd.t(), loss)
+                    }
+                }
+            }
+            log::info!(
+                "Took {}s in total",
+                (std::time::Instant::now() - start).as_secs_f32()
+            );
+
+            let room = rex::nodes_to_room(nodes, &path);
+            let mut builder = graphics::MeshBuilder::new();
+            build_room_mesh(&mut builder, &room);
+            tx.send(builder);
+        });
 
         Ok(MainState {
-            pos: Default::default(),
-            scale: 10.,
-            room,
-            mesh: graphics::Mesh::from_data(ctx, builder.build()),
+            pos: vec2(-512., -512.),
+            scale: 1.,
+            mesh: graphics::Mesh::from_data(
+                ctx,
+                graphics::MeshData {
+                    vertices: &[],
+                    indices: &[],
+                },
+            ),
+            mesh_producer: rx,
         })
     }
 }
 
-fn build_mesh(builder: &mut graphics::MeshBuilder, room: &Room) -> anyhow::Result<()> {
+fn build_nodes_mesh(
+    builder: &mut graphics::MeshBuilder,
+    nodes: &Vec<rex::Node>,
+) -> anyhow::Result<()> {
+    for node in nodes.iter() {
+        builder.circle(
+            graphics::DrawMode::Fill(graphics::FillOptions::default()),
+            node.pos(),
+            10.,
+            0.01,
+            graphics::Color::RED,
+        )?;
+    }
+
+    Ok(())
+}
+
+fn build_room_mesh(builder: &mut graphics::MeshBuilder, room: &Room) -> anyhow::Result<()> {
     builder.circle(
         graphics::DrawMode::Fill(graphics::FillOptions::default()),
         room.mesh[0],
@@ -42,7 +90,7 @@ fn build_mesh(builder: &mut graphics::MeshBuilder, room: &Room) -> anyhow::Resul
             3.,
             graphics::Color::from_rgba_u32(0xFFFFFF50),
         )?;
-        build_mesh(builder, child)?;
+        build_room_mesh(builder, child)?;
     }
 
     Ok(())
@@ -53,6 +101,9 @@ impl event::EventHandler<anyhow::Error> for MainState {
         if ctx.mouse.button_pressed(input::mouse::MouseButton::Middle) {
             let x: Vec2 = ctx.mouse.delta().into();
             self.pos -= x / self.scale;
+        }
+        if let Ok(mesh) = self.mesh_producer.try_recv() {
+            self.mesh = graphics::Mesh::from_data(ctx, mesh.build());
         }
         Ok(())
     }
