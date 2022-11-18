@@ -269,17 +269,26 @@ impl V4CorridorSolver {
         // Connect this node with its children
         for &child_idx in &node.children {
             let child_room = &self.rooms[child_idx];
-            let target = child_room.mesh[0]; // TODO: Smarter target
+            let &target = child_room
+                .mesh
+                .iter()
+                .min_by(|&&point_a, &&point_b| {
+                    (room.mesh[0] - point_a)
+                        .length_squared()
+                        .total_cmp(&(room.mesh[0] - point_b).length_squared())
+                })
+                .unwrap();
             let &start = room
                 .mesh
                 .iter()
                 .min_by(|&&point_a, &&point_b| {
                     (target - point_a)
                         .length_squared()
-                        .total_cmp(&(child_room.mesh[0] - point_b).length_squared())
+                        .total_cmp(&(target - point_b).length_squared())
                 })
                 .unwrap();
             const RESOLUTION: f32 = 1.;
+            const MIN_TARGET_DISTANCE: f32 = RESOLUTION * RESOLUTION * std::f32::consts::SQRT_2;
             let astar_point_to_world_units = |point: IVec2| point.as_vec2() / RESOLUTION;
             let world_units_to_astar_point = |point: Vec2| (point * RESOLUTION).as_ivec2();
             let start_node = world_units_to_astar_point(start);
@@ -308,7 +317,10 @@ impl V4CorridorSolver {
                     .length()
                     .floor() as i32
             };
-            let success = |&point: &IVec2| point == world_units_to_astar_point(target);
+            let success = |&point: &IVec2| {
+                let diff = point - world_units_to_astar_point(target);
+                (diff.dot(diff) as f32) < MIN_TARGET_DISTANCE
+            };
             let path =
                 pathfinding::directed::astar::astar(&start_node, successors, heuristic, success)
                     .unwrap()

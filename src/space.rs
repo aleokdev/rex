@@ -1,4 +1,6 @@
-use glam::{vec2, Vec2};
+use std::collections::HashMap;
+
+use glam::{vec2, IVec2, Vec2};
 
 use crate::grid::RoomId;
 
@@ -8,9 +10,14 @@ pub struct SpaceAllocation {
     radius: f32,
     room_id: RoomId,
 }
+
+const CHUNK_SIZE: f32 = 4.;
+
 #[derive(Debug, Clone, Default)]
 pub struct Space {
-    allocations: Vec<SpaceAllocation>,
+    /// Each chunk contains the allocations that intersect with it.
+    /// Each chunk is a `CHUNK_SIZE` sized square, starting from the origin.
+    allocations: HashMap<IVec2, Vec<SpaceAllocation>>,
 }
 
 /// The allocation didn't fit at the position given since part of the space it needed was already occupied.
@@ -44,45 +51,96 @@ impl Space {
         position: Vec2,
         radius: f32,
     ) -> Result<SpaceAllocation, AllocationError> {
-        let is_colliding = self
-            .allocations
+        let chunk = self.mut_chunk_at(position);
+        let is_colliding = chunk
             .iter()
             .any(|alloc| circle_collides(position, radius, alloc.pos, alloc.radius));
 
         if is_colliding {
             Err(AllocationError)
         } else {
+            let x_range =
+                (position.x - radius).floor() as i32..=(position.x + radius).ceil() as i32;
+            let y_range =
+                (position.y - radius).floor() as i32..=(position.y + radius).ceil() as i32;
+
             let allocation = SpaceAllocation {
                 pos: position,
                 radius,
                 room_id: id,
             };
-            self.allocations.push(allocation);
+
+            for x in x_range {
+                for y in y_range.clone() {
+                    let pos = vec2(x as f32, y as f32);
+                    if circle_intersects_rect(pos, vec2(CHUNK_SIZE, CHUNK_SIZE), position, radius) {
+                        let chunk = self.mut_chunk_at(pos);
+                        chunk.push(allocation);
+                    }
+                }
+            }
 
             Ok(allocation)
         }
     }
 
+    fn chunk_at(&self, position: Vec2) -> Option<&Vec<SpaceAllocation>> {
+        self.allocations
+            .get(&(position / CHUNK_SIZE).floor().as_ivec2())
+    }
+
+    fn mut_chunk_at(&mut self, position: Vec2) -> &mut Vec<SpaceAllocation> {
+        self.allocations
+            .entry((position / CHUNK_SIZE).floor().as_ivec2())
+            .or_insert_with(|| vec![])
+    }
+
     pub fn is_point_allocated(&self, position: Vec2) -> bool {
-        self.allocations.iter().any(|alloc| {
-            (position.x - alloc.pos.x) * (position.x - alloc.pos.x)
-                + (position.y - alloc.pos.y) * (position.y - alloc.pos.y)
-                <= alloc.radius
+        self.chunk_at(position).map_or(false, |chunk| {
+            chunk
+                .iter()
+                .any(|alloc| circle_contains(position, alloc.pos, alloc.radius))
         })
     }
 
     pub fn is_point_allocated_by_any_other_than(&self, id: RoomId, position: Vec2) -> bool {
-        self.allocations
-            .iter()
-            .filter(|alloc| alloc.room_id != id)
-            .any(|alloc| {
-                (position.x - alloc.pos.x) * (position.x - alloc.pos.x)
-                    + (position.y - alloc.pos.y) * (position.y - alloc.pos.y)
-                    <= alloc.radius
-            })
+        self.chunk_at(position).map_or(false, |chunk| {
+            chunk
+                .iter()
+                .filter(|alloc| alloc.room_id != id)
+                .any(|alloc| circle_contains(position, alloc.pos, alloc.radius))
+        })
     }
+}
+
+fn circle_contains(pos: Vec2, circle_center: Vec2, r: f32) -> bool {
+    (pos.x - circle_center.x) * (pos.x - circle_center.x)
+        + (pos.y - circle_center.y) * (pos.y - circle_center.y)
+        <= r * r
 }
 
 fn circle_collides(pos1: Vec2, r1: f32, pos2: Vec2, r2: f32) -> bool {
     (pos2 - pos1).length_squared() <= (r1 + r2) * (r1 + r2)
+}
+
+fn circle_intersects_rect(min: Vec2, size: Vec2, center: Vec2, r: f32) -> bool {
+    let distance = (center - min).abs();
+
+    if distance.x > (size.x / 2. + r) {
+        return false;
+    }
+    if distance.y > (size.y / 2. + r) {
+        return false;
+    }
+
+    if distance.x <= size.x / 2. {
+        return true;
+    }
+    if distance.y <= size.y / 2. {
+        return true;
+    }
+
+    let corner_distance_sq = (distance - size).length_squared();
+
+    corner_distance_sq <= r * r
 }
