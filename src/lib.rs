@@ -6,11 +6,14 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use glam::{vec2, IVec2, Vec2};
+use glam::{ivec2, vec2, IVec2, Vec2};
+use grid::RoomTemplate;
+use rand::{seq::SliceRandom, Rng};
 
 // TODO: Custom result type
 pub type Result<T> = anyhow::Result<T>;
 
+#[derive(Default)]
 pub struct Room {
     pub path: PathBuf,
     /// Counter-clockwise points
@@ -25,6 +28,7 @@ pub struct Connection {
     end: IVec2,
 }
 
+#[derive(Clone, Debug)]
 pub struct Node {
     path: PathBuf,
     parent: Option<usize>,
@@ -64,6 +68,21 @@ pub fn generate_nodes(path: &Path) -> Result<Vec<Node>> {
     Ok(nodes)
 }
 
+#[derive(Default)]
+pub struct RoomTemplateDb {
+    templates: Vec<RoomTemplate>,
+}
+
+impl RoomTemplateDb {
+    pub fn random(&self, rng: &mut impl Rng) -> Option<&RoomTemplate> {
+        self.templates.choose(rng)
+    }
+
+    pub fn push(&mut self, template: RoomTemplate) {
+        self.templates.push(template)
+    }
+}
+
 /// To-be-named algorithm using an infinite cell grid, trying to place rooms as close as possible but allowing placing corridors as connections
 /// that intersect each other.
 pub struct V3 {
@@ -74,18 +93,64 @@ pub struct V3 {
     /// It will unwind when there are no more children to process in a given node,
     /// and increase its size when a node has children to process.
     stack: Vec<usize>,
+    template_db: RoomTemplateDb,
 }
 
 impl V3 {
-    pub fn new(nodes: Vec<Node>) -> Self {
+    pub fn new(nodes: Vec<Node>, template_db: RoomTemplateDb) -> Self {
         Self {
+            rooms: nodes
+                .iter()
+                .map(|node| Room {
+                    path: node.path.clone(),
+                    ..Default::default()
+                })
+                .collect(),
             nodes,
             grid: Default::default(),
-            rooms: vec![],
             // We start on the root node
             stack: vec![0],
+            template_db,
         }
     }
 
-    pub fn iterate(&mut self) -> ControlFlow<(), ()> {}
+    pub fn iterate(&mut self, rng: &mut impl Rng) -> ControlFlow<(), ()> {
+        let Some(node_idx) = self.stack.pop() else { return ControlFlow::Break(()) };
+        let node = &self.nodes[node_idx];
+
+        let template_to_place = self.template_db.random(rng).unwrap();
+
+        let final_pos = self.grid.place_template_near(
+            template_to_place,
+            node_idx,
+            node.parent
+                .map(|parent| *self.rooms[parent].mesh.choose(rng).unwrap())
+                .unwrap_or(Vec2::ZERO),
+            rng,
+        );
+
+        self.rooms[node_idx].mesh = template_to_place
+            .outline()
+            .iter()
+            .map(|&v| v + final_pos.as_vec2())
+            .collect();
+
+        for &child in &node.children {
+            self.stack.push(child);
+        }
+
+        if self.stack.is_empty() {
+            ControlFlow::Break(())
+        } else {
+            ControlFlow::Continue(())
+        }
+    }
+
+    pub fn nodes(&self) -> &[Node] {
+        self.nodes.as_ref()
+    }
+
+    pub fn rooms(&self) -> &[Room] {
+        self.rooms.as_ref()
+    }
 }

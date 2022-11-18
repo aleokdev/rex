@@ -22,21 +22,24 @@ impl<Cell> GridChunk<Cell> {
     /// Total cells in the chunk
     pub const CELL_COUNT: u32 = Self::CELLS_PER_AXIS * Self::CELLS_PER_AXIS;
 
-    pub fn cell(&self, pos @ UVec2 { x, y }: UVec2) -> Option<&Cell> {
-        self.contains(pos)
+    pub fn cell(&self, pos: impl Into<mint::Vector2<u32>>) -> Option<&Cell> {
+        let mint::Vector2 { x, y } = pos.into();
+        self.contains(mint::Vector2 { x, y })
             .then(|| self.cells.get((x + y * Self::CELLS_PER_AXIS) as usize))
             .flatten()
     }
 
-    pub fn set_cell(&mut self, pos @ UVec2 { x, y }: UVec2, value: Cell) {
+    pub fn set_cell(&mut self, pos: impl Into<mint::Vector2<u32>>, value: Cell) {
+        let mint::Vector2 { x, y } = pos.into();
         assert!(
-            self.contains(pos),
+            self.contains(mint::Vector2 { x, y }),
             "Tried to set node of wire grid which wasn't contained within"
         );
         self.cells[(x + y * Self::CELLS_PER_AXIS) as usize] = value;
     }
 
-    pub fn contains(&self, UVec2 { x, y }: UVec2) -> bool {
+    pub fn contains(&self, pos: impl Into<mint::Vector2<u32>>) -> bool {
+        let mint::Vector2 { x, y } = pos.into();
         x < Self::CELLS_PER_AXIS && y < Self::CELLS_PER_AXIS
     }
 }
@@ -47,43 +50,63 @@ pub struct CartesianGrid<Cell: Default + Copy> {
 }
 
 impl<Cell: Default + Copy> CartesianGrid<Cell> {
-    pub fn cell(&self, pos: IVec2) -> Option<&Cell> {
-        let (chunk_pos, local_pos) = Self::global_coords_to_chunk_and_local_coords(pos);
+    pub fn cell(&self, pos: impl Into<mint::Vector2<i32>>) -> Option<&Cell> {
+        let (chunk_pos, local_pos) = Self::global_coords_to_chunk_and_local_coords(pos.into());
 
         self.cell_at(chunk_pos, local_pos)
     }
 
-    pub fn cell_at(&self, chunk_pos: IVec2, local_pos: UVec2) -> Option<&Cell> {
-        self.chunks.get(&chunk_pos).map(|chunk| {
+    pub fn cell_at(
+        &self,
+        chunk_pos: impl Into<mint::Vector2<i32>>,
+        local_pos: impl Into<mint::Vector2<u32>>,
+    ) -> Option<&Cell> {
+        self.chunks.get(&chunk_pos.into().into()).map(|chunk| {
             chunk
                 .cell(local_pos)
                 .expect("Cell calculations aren't correct")
         })
     }
 
-    pub fn set_cell(&mut self, pos: IVec2, value: Cell) {
-        let (chunk_pos, local_pos) = Self::global_coords_to_chunk_and_local_coords(pos);
+    pub fn set_cell(&mut self, pos: impl Into<mint::Vector2<i32>>, value: Cell) {
+        let (chunk_pos, local_pos) = Self::global_coords_to_chunk_and_local_coords(pos.into());
 
         self.set_cell_at(chunk_pos, local_pos, value)
     }
 
-    pub fn set_cell_at(&mut self, chunk_pos: IVec2, local_pos: UVec2, value: Cell) {
+    pub fn set_cell_at(
+        &mut self,
+        chunk_pos: impl Into<mint::Vector2<i32>>,
+        local_pos: impl Into<mint::Vector2<u32>>,
+        value: Cell,
+    ) {
         self.chunks
-            .entry(chunk_pos)
+            .entry(chunk_pos.into().into())
             .or_insert_with(|| Default::default())
             .set_cell(local_pos, value)
     }
 
-    pub fn global_coords_to_chunk_and_local_coords(IVec2 { x, y }: IVec2) -> (IVec2, UVec2) {
+    pub fn global_coords_to_chunk_and_local_coords(
+        vec: impl Into<mint::Vector2<i32>>,
+    ) -> (IVec2, UVec2) {
+        let mint::Vector2 { x, y } = vec.into();
         let x_c = floordiv(x, GridChunk::<Cell>::CELLS_PER_AXIS as i32);
         let x_local = x - x_c * GridChunk::<Cell>::CELLS_PER_AXIS as i32;
         let y_c = floordiv(y, GridChunk::<Cell>::CELLS_PER_AXIS as i32);
         let y_local = y - y_c * GridChunk::<Cell>::CELLS_PER_AXIS as i32;
+        assert!(x_local >= 0 && x_local < GridChunk::<Cell>::CELLS_PER_AXIS as i32);
+        assert!(y_local >= 0 && y_local < GridChunk::<Cell>::CELLS_PER_AXIS as i32);
         (ivec2(x_c, y_c), uvec2(x_local as u32, y_local as u32))
     }
 
-    pub fn chunk_and_local_coords_to_global_coords(chunk_pos: IVec2, local_pos: UVec2) -> IVec2 {
-        chunk_pos * GridChunk::<Cell>::CELLS_PER_AXIS as i32 + local_pos.as_ivec2()
+    pub fn chunk_and_local_coords_to_global_coords(
+        chunk_pos: impl Into<mint::Vector2<i32>>,
+        local_pos: impl Into<mint::Vector2<u32>>,
+    ) -> mint::Vector2<i32> {
+        (<mint::Vector2<i32> as Into<IVec2>>::into(chunk_pos.into())
+            * GridChunk::<Cell>::CELLS_PER_AXIS as i32
+            + <mint::Vector2<u32> as Into<UVec2>>::into(local_pos.into()).as_ivec2())
+        .into()
     }
 }
 
@@ -118,16 +141,19 @@ pub struct RoomTemplate {
     grid: CartesianGrid<RoomTemplateCell>,
     /// Given the template's grid, the radius of the biggest circle that can fit within all cells marked with `true` from the origin.
     inscribed_radius: f32,
+    outline: Vec<Vec2>,
 }
 
 impl RoomTemplate {
-    pub fn with_inscribed_radius(
+    pub fn with_inscribed_radius_and_outline<T: Into<mint::Vector2<f32>> + Copy>(
         grid: CartesianGrid<RoomTemplateCell>,
         inscribed_radius: f32,
+        outline: &[T],
     ) -> Self {
         Self {
             grid,
             inscribed_radius,
+            outline: outline.into_iter().map(|&x| x.into().into()).collect(),
         }
     }
 
@@ -138,9 +164,14 @@ impl RoomTemplate {
     pub fn grid(&self) -> &CartesianGrid<RoomTemplateCell> {
         &self.grid
     }
+
+    pub fn outline(&self) -> &[Vec2] {
+        self.outline.as_ref()
+    }
 }
 
 /// The template didn't fit at the position given since part of the space it needed was already occupied.
+#[derive(Clone, Copy, Debug)]
 pub struct PlaceTemplateError;
 
 pub type CartesianRoomGrid = CartesianGrid<Option<RoomId>>;
@@ -150,9 +181,10 @@ impl CartesianRoomGrid {
         &mut self,
         template: &RoomTemplate,
         id: RoomId,
-        position: Vec2,
+        position: impl Into<mint::Vector2<f32>>,
         rng: &mut impl rand::Rng,
-    ) {
+    ) -> IVec2 {
+        let position = Vec2::from(position.into());
         let random_angle = rng.gen_range(0.0..(std::f32::consts::PI * 2.));
         let random_dir = vec2(random_angle.cos(), random_angle.sin());
         const STEP: f32 = 1.;
@@ -161,14 +193,17 @@ impl CartesianRoomGrid {
         while let Err(_) = self.place_template_at(template, id, try_pos.as_ivec2()) {
             try_pos += STEP * random_dir;
         }
+
+        try_pos.as_ivec2()
     }
 
     pub fn place_template_at(
         &mut self,
         template: &RoomTemplate,
         id: RoomId,
-        template_position: IVec2,
+        template_position: impl Into<mint::Vector2<i32>>,
     ) -> Result<(), PlaceTemplateError> {
+        let template_position = IVec2::from(template_position.into());
         // We allocate a vector of all the positions we change just in case we need to rollback.
         let mut positions_changed = Vec::with_capacity(
             template.grid().chunks.len() * GridChunk::<RoomTemplateCell>::CELL_COUNT as usize,
@@ -179,10 +214,11 @@ impl CartesianRoomGrid {
                 for y in 0..GridChunk::<RoomId>::CELLS_PER_AXIS {
                     let local_pos = uvec2(x, y);
                     if template_chunk.cell(local_pos).unwrap().is_occupied() {
-                        let global_pos =
-                            Self::chunk_and_local_coords_to_global_coords(chunk_pos, local_pos)
-                                + template_position;
-                        if self.cell(global_pos).is_some() {
+                        let global_pos = IVec2::from(
+                            Self::chunk_and_local_coords_to_global_coords(chunk_pos, local_pos),
+                        ) + template_position;
+                        let cell = self.cell(global_pos).copied().flatten();
+                        if cell.is_some() {
                             for global_pos in positions_changed {
                                 self.set_cell(global_pos, None)
                             }
@@ -196,6 +232,6 @@ impl CartesianRoomGrid {
             }
         }
 
-        todo!()
+        Ok(())
     }
 }
