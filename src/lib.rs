@@ -1,4 +1,5 @@
 pub mod grid;
+mod space;
 
 use std::{
     fs,
@@ -9,6 +10,7 @@ use std::{
 use glam::{ivec2, vec2, IVec2, Vec2};
 use grid::RoomTemplate;
 use rand::{seq::SliceRandom, Rng};
+use space::Space;
 
 // TODO: Custom result type
 pub type Result<T> = anyhow::Result<T>;
@@ -134,6 +136,86 @@ impl V3 {
             .iter()
             .map(|&v| v + final_pos.as_vec2())
             .collect();
+
+        for &child in &node.children {
+            self.stack.push(child);
+        }
+
+        if self.stack.is_empty() {
+            ControlFlow::Break(())
+        } else {
+            ControlFlow::Continue(())
+        }
+    }
+
+    pub fn nodes(&self) -> &[Node] {
+        self.nodes.as_ref()
+    }
+
+    pub fn rooms(&self) -> &[Room] {
+        self.rooms.as_ref()
+    }
+}
+
+/// To-be-named algorithm using an infinite space using allocations to reserve space for rooms.
+pub struct V4 {
+    nodes: Vec<Node>,
+    rooms: Vec<Room>,
+    radius_per_child: f32,
+    /// Indicates the node branch the algorithm has gone through.
+    /// It will unwind when there are no more children to process in a given node,
+    /// and increase its size when a node has children to process.
+    stack: Vec<usize>,
+    space: Space,
+}
+
+impl V4 {
+    pub fn new(nodes: Vec<Node>, radius_per_child: f32) -> Self {
+        Self {
+            rooms: nodes
+                .iter()
+                .map(|node| Room {
+                    path: node.path.clone(),
+                    ..Default::default()
+                })
+                .collect(),
+            nodes,
+            radius_per_child,
+            // We start on the root node
+            stack: vec![0],
+            space: Default::default(),
+        }
+    }
+
+    pub fn iterate(&mut self, rng: &mut impl Rng) -> ControlFlow<(), ()> {
+        let Some(node_idx) = self.stack.pop() else { return ControlFlow::Break(()) };
+        let node = &self.nodes[node_idx];
+
+        let radius = (self.radius_per_child * node.children.len() as f32).sqrt();
+        let parent_radius = node
+            .parent
+            .map(|parent_idx| {
+                (self.radius_per_child * self.nodes[parent_idx].children.len() as f32).sqrt()
+            })
+            .unwrap_or(0.);
+
+        let final_pos = self.space.allocate_near(
+            node_idx,
+            node.parent
+                .map(|parent_idx| *self.rooms[parent_idx].mesh.choose(rng).unwrap())
+                .unwrap_or(Vec2::ZERO),
+            parent_radius,
+            radius,
+            rng,
+        );
+
+        let point_count = rng.gen_range(4..6);
+
+        let points = (0..point_count)
+            .map(|point_idx| (point_idx as f32 / point_count as f32) * std::f32::consts::TAU)
+            .map(|angle| Vec2::from(angle.sin_cos()) * (radius - 0.5) + final_pos);
+
+        self.rooms[node_idx].mesh = points.collect();
 
         for &child in &node.children {
             self.stack.push(child);

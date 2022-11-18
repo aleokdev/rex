@@ -68,19 +68,19 @@ fn spawn_mesh_builder(nodes: Vec<rex::Node>, radius: f32) -> mpsc::Receiver<grap
             )
         });
 
-        let mut v3 = rex::V3::new(nodes, db);
+        let mut v4 = rex::V4::new(nodes, radius);
         let mut rng = rand::thread_rng();
         let mut iterations = 0;
 
         loop {
-            match v3.iterate(&mut rng) {
+            match v4.iterate(&mut rng) {
                 ControlFlow::Break(_) => break,
                 ControlFlow::Continue(_) => {}
             }
 
             if iterations % 100 == 0 {
                 let mut builder = graphics::MeshBuilder::new();
-                build_room_mesh(&mut builder, v3.rooms()).unwrap();
+                build_room_mesh(&mut builder, v4.rooms()).unwrap();
                 tx.send(builder).unwrap();
             }
 
@@ -92,7 +92,7 @@ fn spawn_mesh_builder(nodes: Vec<rex::Node>, radius: f32) -> mpsc::Receiver<grap
         );
 
         let mut builder = graphics::MeshBuilder::new();
-        build_room_mesh(&mut builder, &v3.rooms()).unwrap();
+        build_room_mesh(&mut builder, &v4.rooms()).unwrap();
         tx.send(builder);
     });
     rx
