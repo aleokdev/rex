@@ -62,8 +62,27 @@ impl Space {
             Ok(allocation)
         }
     }
+
+    pub fn is_point_allocated(&self, position: Vec2) -> bool {
+        self.allocations.iter().any(|alloc| {
+            (position.x - alloc.pos.x) * (position.x - alloc.pos.x)
+                + (position.y - alloc.pos.y) * (position.y - alloc.pos.y)
+                <= alloc.radius
+        })
+    }
+
+    pub fn is_point_allocated_by_any_other_than(&self, id: RoomId, position: Vec2) -> bool {
+        self.allocations
+            .iter()
+            .filter(|alloc| alloc.room_id != id)
+            .any(|alloc| {
+                (position.x - alloc.pos.x) * (position.x - alloc.pos.x)
+                    + (position.y - alloc.pos.y) * (position.y - alloc.pos.y)
+                    <= alloc.radius
+            })
+    }
 }
 
 fn circle_collides(pos1: Vec2, r1: f32, pos2: Vec2, r2: f32) -> bool {
-    (pos1 - pos2).length() <= r1.max(r2)
+    (pos2 - pos1).length_squared() <= (r1 + r2) * (r1 + r2)
 }

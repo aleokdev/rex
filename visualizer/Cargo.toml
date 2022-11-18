@@ -12,3 +12,4 @@ rex = { path = ".." }
 env_logger = "0.9.3"
 log = "0.4.17"
 rand = "0.8.5"
+mint = "0.5.9"

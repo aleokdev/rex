@@ -161,7 +161,6 @@ impl V3 {
 pub struct V4 {
     nodes: Vec<Node>,
     rooms: Vec<Room>,
-    radius_per_child: f32,
     /// Indicates the node branch the algorithm has gone through.
     /// It will unwind when there are no more children to process in a given node,
     /// and increase its size when a node has children to process.
@@ -170,7 +169,7 @@ pub struct V4 {
 }
 
 impl V4 {
-    pub fn new(nodes: Vec<Node>, radius_per_child: f32) -> Self {
+    pub fn new(nodes: Vec<Node>) -> Self {
         Self {
             rooms: nodes
                 .iter()
@@ -180,7 +179,6 @@ impl V4 {
                 })
                 .collect(),
             nodes,
-            radius_per_child,
             // We start on the root node
             stack: vec![0],
             space: Default::default(),
@@ -191,12 +189,14 @@ impl V4 {
         let Some(node_idx) = self.stack.pop() else { return ControlFlow::Break(()) };
         let node = &self.nodes[node_idx];
 
-        let radius = (self.radius_per_child * node.children.len() as f32).sqrt();
+        fn radius_fn(child_count: usize) -> f32 {
+            1.
+        }
+
+        let radius = radius_fn(node.children.len());
         let parent_radius = node
             .parent
-            .map(|parent_idx| {
-                (self.radius_per_child * self.nodes[parent_idx].children.len() as f32).sqrt()
-            })
+            .map(|parent_idx| radius_fn(self.nodes[parent_idx].children.len()))
             .unwrap_or(0.);
 
         let final_pos = self.space.allocate_near(
@@ -204,16 +204,19 @@ impl V4 {
             node.parent
                 .map(|parent_idx| *self.rooms[parent_idx].mesh.choose(rng).unwrap())
                 .unwrap_or(Vec2::ZERO),
-            parent_radius,
-            radius,
+            parent_radius * 2.,
+            radius * 2.,
             rng,
         );
 
-        let point_count = rng.gen_range(4..6);
+        let point_count = rng.gen_range(4..=6);
 
         let points = (0..point_count)
-            .map(|point_idx| (point_idx as f32 / point_count as f32) * std::f32::consts::TAU)
-            .map(|angle| Vec2::from(angle.sin_cos()) * (radius - 0.5) + final_pos);
+            .map(|point_idx| {
+                std::f32::consts::FRAC_PI_2
+                    + (point_idx as f32 / point_count as f32) * std::f32::consts::TAU
+            })
+            .map(|angle| Vec2::from(angle.sin_cos()) * radius + final_pos);
 
         self.rooms[node_idx].mesh = points.collect();
 
@@ -226,6 +229,113 @@ impl V4 {
         } else {
             ControlFlow::Continue(())
         }
+    }
+
+    pub fn nodes(&self) -> &[Node] {
+        self.nodes.as_ref()
+    }
+
+    pub fn rooms(&self) -> &[Room] {
+        self.rooms.as_ref()
+    }
+
+    pub fn build(self) -> (Vec<Node>, Vec<Room>, Space) {
+        (self.nodes, self.rooms, self.space)
+    }
+}
+
+pub struct V4CorridorSolver {
+    nodes: Vec<Node>,
+    rooms: Vec<Room>,
+    paths: Vec<Vec<mint::Vector2<f32>>>,
+    space: Space,
+    current_node: usize,
+}
+
+impl V4CorridorSolver {
+    pub fn new(nodes: Vec<Node>, rooms: Vec<Room>, space: Space) -> Self {
+        Self {
+            nodes,
+            rooms,
+            paths: vec![],
+            space,
+            current_node: 0,
+        }
+    }
+
+    pub fn iterate(&mut self) -> ControlFlow<(), ()> {
+        let node = &self.nodes[self.current_node];
+        let room = &self.rooms[self.current_node];
+        // Connect this node with its children
+        for &child_idx in &node.children {
+            let child_room = &self.rooms[child_idx];
+            let target = child_room.mesh[0]; // TODO: Smarter target
+            let &start = room
+                .mesh
+                .iter()
+                .min_by(|&&point_a, &&point_b| {
+                    (target - point_a)
+                        .length_squared()
+                        .total_cmp(&(child_room.mesh[0] - point_b).length_squared())
+                })
+                .unwrap();
+            const RESOLUTION: f32 = 1.;
+            let astar_point_to_world_units = |point: IVec2| point.as_vec2() / RESOLUTION;
+            let world_units_to_astar_point = |point: Vec2| (point * RESOLUTION).as_ivec2();
+            let start_node = world_units_to_astar_point(start);
+            let successors = |&point: &IVec2| {
+                let point_and_cost = |delta: IVec2| {
+                    let point = point + delta;
+                    let cost = if self.space.is_point_allocated_by_any_other_than(
+                        child_idx,
+                        astar_point_to_world_units(point),
+                    ) {
+                        10
+                    } else {
+                        1
+                    };
+                    (point, cost)
+                };
+                [
+                    point_and_cost(ivec2(0, 1)),
+                    point_and_cost(ivec2(1, 0)),
+                    point_and_cost(ivec2(0, -1)),
+                    point_and_cost(ivec2(-1, 0)),
+                ]
+            };
+            let heuristic = |&point: &IVec2| {
+                (astar_point_to_world_units(point) - target)
+                    .length()
+                    .floor() as i32
+            };
+            let success = |&point: &IVec2| point == world_units_to_astar_point(target);
+            let path =
+                pathfinding::directed::astar::astar(&start_node, successors, heuristic, success)
+                    .unwrap()
+                    .0;
+            let mut path: Vec<mint::Vector2<f32>> = path
+                .into_iter()
+                .map(|x| astar_point_to_world_units(x).into())
+                .collect();
+            if let Some(first) = path.first_mut() {
+                *first = start.into();
+            }
+            if let Some(last) = path.last_mut() {
+                *last = target.into();
+            }
+            self.paths.push(path);
+        }
+
+        self.current_node += 1;
+        if self.current_node >= self.nodes.len() {
+            ControlFlow::Break(())
+        } else {
+            ControlFlow::Continue(())
+        }
+    }
+
+    pub fn paths(&self) -> &[Vec<mint::Vector2<f32>>] {
+        self.paths.as_ref()
     }
 
     pub fn nodes(&self) -> &[Node] {
