@@ -20,7 +20,7 @@ pub type Result<T> = anyhow::Result<T>;
 pub struct Room {
     pub path: PathBuf,
     /// Points in non-specified winding indicating the contour of the floor mesh.
-    pub mesh: Vec<Vec2>,
+    pub mesh: Vec<mint::Vector2<f32>>,
     // TODO: How do we represent connections / doors / doorways?
     // Maybe with points & normals, then add doorways in walls in the vertex shader?
     // pub connections: Vec<Connection>,
@@ -98,12 +98,7 @@ impl RoomPlacer {
             })
             .collect();
         // Generate root room mesh
-        rooms[0].mesh = (0..4)
-            .map(|point_idx| {
-                std::f32::consts::FRAC_PI_2 + (point_idx as f32 / 4.) * std::f32::consts::TAU
-            })
-            .map(|angle| Vec2::from(angle.sin_cos()) * 1. + Vec2::ZERO)
-            .collect();
+        rooms[0].mesh = Self::generate_room_mesh(4, 1., Vec2::ZERO);
 
         Self {
             rooms,
@@ -130,7 +125,7 @@ impl RoomPlacer {
 
             let final_pos = self.space.allocate_near(
                 child_idx,
-                *self.rooms[node_idx].mesh.choose(rng).unwrap(),
+                Vec2::from(*self.rooms[node_idx].mesh.choose(rng).unwrap()),
                 parent_radius * 2.,
                 radius * 2.,
                 rng,
@@ -138,14 +133,8 @@ impl RoomPlacer {
 
             let point_count = rng.gen_range(4..=6);
 
-            let points = (0..point_count)
-                .map(|point_idx| {
-                    std::f32::consts::FRAC_PI_2
-                        + (point_idx as f32 / point_count as f32) * std::f32::consts::TAU
-                })
-                .map(|angle| Vec2::from(angle.sin_cos()) * radius + final_pos);
-
-            self.rooms[child_idx].mesh = points.collect();
+            let points = Self::generate_room_mesh(point_count, radius, final_pos);
+            self.rooms[child_idx].mesh = points;
 
             self.stack.push(child_idx);
         }
@@ -155,6 +144,20 @@ impl RoomPlacer {
         } else {
             ControlFlow::Continue(())
         }
+    }
+
+    fn generate_room_mesh(
+        point_count: usize,
+        radius: f32,
+        position: Vec2,
+    ) -> Vec<mint::Vector2<f32>> {
+        (0..point_count)
+            .map(|point_idx| {
+                std::f32::consts::FRAC_PI_2
+                    + (point_idx as f32 / point_count as f32) * std::f32::consts::TAU
+            })
+            .map(|angle| (Vec2::from(angle.sin_cos()) * radius + position).into())
+            .collect()
     }
 
     #[inline]
@@ -198,23 +201,25 @@ impl CorridorPlacer {
     pub fn iterate(&mut self) -> ControlFlow<(), ()> {
         let node = &self.nodes[self.current_node];
         let room = &self.rooms[self.current_node];
-        let room_mesh = &room.mesh;
+        let room_mesh_first_point = Vec2::from(room.mesh[0]);
         // Connect this node with its children
         for &child_idx in &node.children {
             let child_room = &self.rooms[child_idx];
-            let &target = child_room
+            let target = child_room
                 .mesh
                 .iter()
-                .min_by(|&&point_a, &&point_b| {
-                    (room_mesh[0] - point_a)
+                .map(|&point| Vec2::from(point))
+                .min_by(|&point_a, &point_b| {
+                    (room_mesh_first_point - point_a)
                         .length_squared()
-                        .total_cmp(&(room_mesh[0] - point_b).length_squared())
+                        .total_cmp(&(room_mesh_first_point - point_b).length_squared())
                 })
                 .unwrap();
-            let &start = room
+            let start = room
                 .mesh
                 .iter()
-                .min_by(|&&point_a, &&point_b| {
+                .map(|&point| Vec2::from(point))
+                .min_by(|&point_a, &point_b| {
                     (target - point_a)
                         .length_squared()
                         .total_cmp(&(target - point_b).length_squared())
