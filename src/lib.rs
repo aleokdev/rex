@@ -85,6 +85,7 @@ pub struct RoomPlacer {
 }
 
 impl RoomPlacer {
+    #[inline]
     pub fn new(nodes: Vec<Node>) -> Self {
         Self {
             rooms: nodes
@@ -147,14 +148,17 @@ impl RoomPlacer {
         }
     }
 
+    #[inline]
     pub fn nodes(&self) -> &[Node] {
         self.nodes.as_ref()
     }
 
+    #[inline]
     pub fn rooms(&self) -> &[Room] {
         self.rooms.as_ref()
     }
 
+    #[inline]
     pub fn build(self) -> (Vec<Node>, Vec<Room>, Space) {
         (self.nodes, self.rooms, self.space)
     }
@@ -171,6 +175,7 @@ pub struct CorridorPlacer {
 }
 
 impl CorridorPlacer {
+    #[inline]
     pub fn new(nodes: Vec<Node>, rooms: Vec<Room>, space: Space) -> Self {
         Self {
             nodes,
@@ -266,18 +271,22 @@ impl CorridorPlacer {
         }
     }
 
+    #[inline]
     pub fn paths(&self) -> &[Vec<mint::Vector2<f32>>] {
         self.paths.as_ref()
     }
 
+    #[inline]
     pub fn nodes(&self) -> &[Node] {
         self.nodes.as_ref()
     }
 
+    #[inline]
     pub fn rooms(&self) -> &[Room] {
         self.rooms.as_ref()
     }
 
+    #[inline]
     pub fn build(self) -> (Vec<Node>, Vec<Room>, Vec<Vec<mint::Vector2<f32>>>, Space) {
         (self.nodes, self.rooms, self.paths, self.space)
     }
