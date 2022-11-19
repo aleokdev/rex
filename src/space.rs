@@ -1,7 +1,7 @@
 use ahash::AHashMap;
 use glam::{vec2, IVec2, Vec2};
 
-use crate::grid::RoomId;
+use crate::RoomId;
 
 #[derive(Debug, Clone, Copy)]
 pub struct SpaceAllocation {

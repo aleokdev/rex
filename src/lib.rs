@@ -1,4 +1,3 @@
-pub mod grid;
 mod space;
 
 use std::{
@@ -8,8 +7,7 @@ use std::{
     sync::{atomic::AtomicUsize, Arc},
 };
 
-use glam::{ivec2, vec2, IVec2, Vec2};
-use grid::RoomTemplate;
+use glam::{ivec2, IVec2, Vec2};
 use rand::{seq::SliceRandom, Rng};
 use rayon::prelude::{IntoParallelRefMutIterator, ParallelIterator};
 use space::Space;
@@ -17,21 +15,22 @@ use space::Space;
 // TODO: Custom result type
 pub type Result<T> = anyhow::Result<T>;
 
+/// A Rex Room. This represents a directory in 3D space.
 #[derive(Default)]
 pub struct Room {
     pub path: PathBuf,
-    /// Counter-clockwise points
+    /// Points in non-specified winding indicating the contour of the floor mesh.
     pub mesh: Vec<Vec2>,
-    pub connections: Vec<Connection>,
+    // TODO: How do we represent connections / doors / doorways?
+    // Maybe with points & normals, then add doorways in walls in the vertex shader?
+    // pub connections: Vec<Connection>,
 }
 
-pub struct Connection {
-    /// Global grid pos
-    start: IVec2,
-    /// Global grid pos
-    end: IVec2,
-}
+/// Used to refer to a room. This is the index to a room in the rooms vector.
+pub type RoomId = usize;
 
+/// A node in the directory tree, specifying its path, parent and children.
+// TODO: Specify shortcut behavior
 #[derive(Clone, Debug)]
 pub struct Node {
     path: PathBuf,
@@ -39,6 +38,7 @@ pub struct Node {
     children: Vec<usize>,
 }
 
+/// Returns a node and its children from a directory path.
 pub fn generate_nodes(path: &Path) -> Result<Vec<Node>> {
     let mut nodes = Vec::<Node>::with_capacity(100);
 
@@ -72,95 +72,9 @@ pub fn generate_nodes(path: &Path) -> Result<Vec<Node>> {
     Ok(nodes)
 }
 
-#[derive(Default)]
-pub struct RoomTemplateDb {
-    templates: Vec<RoomTemplate>,
-}
-
-impl RoomTemplateDb {
-    pub fn random(&self, rng: &mut impl Rng) -> Option<&RoomTemplate> {
-        self.templates.choose(rng)
-    }
-
-    pub fn push(&mut self, template: RoomTemplate) {
-        self.templates.push(template)
-    }
-}
-
-/// To-be-named algorithm using an infinite cell grid, trying to place rooms as close as possible but allowing placing corridors as connections
-/// that intersect each other.
-pub struct V3 {
-    nodes: Vec<Node>,
-    grid: grid::CartesianRoomGrid,
-    rooms: Vec<Room>,
-    /// Indicates the node branch the algorithm has gone through.
-    /// It will unwind when there are no more children to process in a given node,
-    /// and increase its size when a node has children to process.
-    stack: Vec<usize>,
-    template_db: RoomTemplateDb,
-}
-
-impl V3 {
-    pub fn new(nodes: Vec<Node>, template_db: RoomTemplateDb) -> Self {
-        Self {
-            rooms: nodes
-                .iter()
-                .map(|node| Room {
-                    path: node.path.clone(),
-                    ..Default::default()
-                })
-                .collect(),
-            nodes,
-            grid: Default::default(),
-            // We start on the root node
-            stack: vec![0],
-            template_db,
-        }
-    }
-
-    pub fn iterate(&mut self, rng: &mut impl Rng) -> ControlFlow<(), ()> {
-        let Some(node_idx) = self.stack.pop() else { return ControlFlow::Break(()) };
-        let node = &self.nodes[node_idx];
-
-        let template_to_place = self.template_db.random(rng).unwrap();
-
-        let final_pos = self.grid.place_template_near(
-            template_to_place,
-            node_idx,
-            node.parent
-                .map(|parent| *self.rooms[parent].mesh.choose(rng).unwrap())
-                .unwrap_or(Vec2::ZERO),
-            rng,
-        );
-
-        self.rooms[node_idx].mesh = template_to_place
-            .outline()
-            .iter()
-            .map(|&v| v + final_pos.as_vec2())
-            .collect();
-
-        for &child in &node.children {
-            self.stack.push(child);
-        }
-
-        if self.stack.is_empty() {
-            ControlFlow::Break(())
-        } else {
-            ControlFlow::Continue(())
-        }
-    }
-
-    pub fn nodes(&self) -> &[Node] {
-        self.nodes.as_ref()
-    }
-
-    pub fn rooms(&self) -> &[Room] {
-        self.rooms.as_ref()
-    }
-}
-
-/// To-be-named algorithm using an infinite space using allocations to reserve space for rooms.
-pub struct V4 {
+/// Algorithm that tries to place connected rooms close together, without letting them intersect,
+/// with a bit of space in between them.
+pub struct RoomPlacer {
     nodes: Vec<Node>,
     rooms: Vec<Room>,
     /// Indicates the node branch the algorithm has gone through.
@@ -170,7 +84,7 @@ pub struct V4 {
     space: Space,
 }
 
-impl V4 {
+impl RoomPlacer {
     pub fn new(nodes: Vec<Node>) -> Self {
         Self {
             rooms: nodes
@@ -191,7 +105,7 @@ impl V4 {
         let Some(node_idx) = self.stack.pop() else { return ControlFlow::Break(()) };
         let node = &self.nodes[node_idx];
 
-        fn radius_fn(child_count: usize) -> f32 {
+        fn radius_fn(_child_count: usize) -> f32 {
             1.
         }
 
@@ -246,7 +160,9 @@ impl V4 {
     }
 }
 
-pub struct V4CorridorSolver {
+/// Algorithm that places corridors in between the rooms given, and returns the resulting paths.
+/// These paths may need smoothing & simplification via [`CorridorSimplifier`].
+pub struct CorridorPlacer {
     nodes: Vec<Node>,
     rooms: Vec<Room>,
     paths: Vec<Vec<mint::Vector2<f32>>>,
@@ -254,7 +170,7 @@ pub struct V4CorridorSolver {
     current_node: usize,
 }
 
-impl V4CorridorSolver {
+impl CorridorPlacer {
     pub fn new(nodes: Vec<Node>, rooms: Vec<Room>, space: Space) -> Self {
         Self {
             nodes,
@@ -367,12 +283,13 @@ impl V4CorridorSolver {
     }
 }
 
-pub struct V4CorridorSmoother {
+/// Algorithm that simplifies and cleans up the paths given.
+pub struct CorridorSimplifier {
     paths: Vec<Vec<mint::Vector2<f32>>>,
     space: Space,
 }
 
-impl V4CorridorSmoother {
+impl CorridorSimplifier {
     pub fn new(paths: Vec<Vec<mint::Vector2<f32>>>, space: Space) -> Self {
         // x2 interpolation
         let paths = paths

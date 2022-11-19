@@ -1,7 +1,7 @@
 //! The simplest possible example that does something.
 #![allow(clippy::unnecessary_wraps)]
 
-use std::{ops::ControlFlow, path::PathBuf, sync::mpsc, thread, time::Duration};
+use std::{ops::ControlFlow, path::PathBuf, sync::mpsc, thread};
 
 use ggez::{
     conf::{WindowMode, WindowSetup},
@@ -45,7 +45,7 @@ fn spawn_mesh_builder(nodes: Vec<rex::Node>) -> mpsc::Receiver<graphics::MeshBui
     thread::spawn(move || {
         let start = std::time::Instant::now();
 
-        let mut v4 = rex::V4::new(nodes);
+        let mut v4 = rex::RoomPlacer::new(nodes);
         let mut rng = rand::thread_rng();
         let mut iterations = 0;
 
@@ -70,7 +70,7 @@ fn spawn_mesh_builder(nodes: Vec<rex::Node>) -> mpsc::Receiver<graphics::MeshBui
         let start = std::time::Instant::now();
 
         let (nodes, rooms, space) = v4.build();
-        let mut v4c = rex::V4CorridorSolver::new(nodes, rooms, space);
+        let mut v4c = rex::CorridorPlacer::new(nodes, rooms, space);
         let mut iterations = 0;
 
         loop {
@@ -94,8 +94,8 @@ fn spawn_mesh_builder(nodes: Vec<rex::Node>) -> mpsc::Receiver<graphics::MeshBui
         );
         let start = std::time::Instant::now();
 
-        let (nodes, rooms, paths, space) = v4c.build();
-        let mut v4s = rex::V4CorridorSmoother::new(paths, space);
+        let (_nodes, rooms, paths, space) = v4c.build();
+        let mut v4s = rex::CorridorSimplifier::new(paths, space);
 
         loop {
             match v4s.iterate() {
