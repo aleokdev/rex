@@ -87,18 +87,30 @@ pub struct RoomPlacer {
 impl RoomPlacer {
     #[inline]
     pub fn new(nodes: Vec<Node>) -> Self {
+        let mut space = Space::default();
+        // Allocate root node
+        space.allocate_at(0, Vec2::ZERO, 1.).unwrap();
+        let mut rooms: Vec<Room> = nodes
+            .iter()
+            .map(|node| Room {
+                path: node.path.clone(),
+                ..Default::default()
+            })
+            .collect();
+        // Generate root room mesh
+        rooms[0].mesh = (0..4)
+            .map(|point_idx| {
+                std::f32::consts::FRAC_PI_2 + (point_idx as f32 / 4.) * std::f32::consts::TAU
+            })
+            .map(|angle| Vec2::from(angle.sin_cos()) * 1. + Vec2::ZERO)
+            .collect();
+
         Self {
-            rooms: nodes
-                .iter()
-                .map(|node| Room {
-                    path: node.path.clone(),
-                    ..Default::default()
-                })
-                .collect(),
+            rooms,
             nodes,
-            // We start on the root node
+            // We start processing the root node
             stack: vec![0],
-            space: Default::default(),
+            space: space,
         }
     }
 
@@ -110,35 +122,32 @@ impl RoomPlacer {
             1.
         }
 
-        let radius = radius_fn(node.children.len());
-        let parent_radius = node
-            .parent
-            .map(|parent_idx| radius_fn(self.nodes[parent_idx].children.len()))
-            .unwrap_or(0.);
+        // Breadth-first rather than depth-first to encourage having connected rooms next to each other
+        for &child_idx in node.children.iter() {
+            let child_node = &self.nodes[child_idx];
+            let radius = radius_fn(child_node.children.len());
+            let parent_radius = radius_fn(node.children.len());
 
-        let final_pos = self.space.allocate_near(
-            node_idx,
-            node.parent
-                .map(|parent_idx| *self.rooms[parent_idx].mesh.choose(rng).unwrap())
-                .unwrap_or(Vec2::ZERO),
-            parent_radius * 2.,
-            radius * 2.,
-            rng,
-        );
+            let final_pos = self.space.allocate_near(
+                child_idx,
+                *self.rooms[node_idx].mesh.choose(rng).unwrap(),
+                parent_radius * 2.,
+                radius * 2.,
+                rng,
+            );
 
-        let point_count = rng.gen_range(4..=6);
+            let point_count = rng.gen_range(4..=6);
 
-        let points = (0..point_count)
-            .map(|point_idx| {
-                std::f32::consts::FRAC_PI_2
-                    + (point_idx as f32 / point_count as f32) * std::f32::consts::TAU
-            })
-            .map(|angle| Vec2::from(angle.sin_cos()) * radius + final_pos);
+            let points = (0..point_count)
+                .map(|point_idx| {
+                    std::f32::consts::FRAC_PI_2
+                        + (point_idx as f32 / point_count as f32) * std::f32::consts::TAU
+                })
+                .map(|angle| Vec2::from(angle.sin_cos()) * radius + final_pos);
 
-        self.rooms[node_idx].mesh = points.collect();
+            self.rooms[child_idx].mesh = points.collect();
 
-        for &child in &node.children {
-            self.stack.push(child);
+            self.stack.push(child_idx);
         }
 
         if self.stack.is_empty() {
