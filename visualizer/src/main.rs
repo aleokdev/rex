@@ -64,9 +64,10 @@ fn spawn_mesh_builder(nodes: Vec<rex::Node>) -> mpsc::Receiver<graphics::MeshBui
             iterations += 1;
         }
         log::info!(
-            "Took {}s in total",
+            "Node creation took {}s in total",
             (std::time::Instant::now() - start).as_secs_f32()
         );
+        let start = std::time::Instant::now();
 
         let (nodes, rooms, space) = v4.build();
         let mut v4c = rex::V4CorridorSolver::new(nodes, rooms, space);
@@ -88,9 +89,10 @@ fn spawn_mesh_builder(nodes: Vec<rex::Node>) -> mpsc::Receiver<graphics::MeshBui
             iterations += 1;
         }
         log::info!(
-            "Took {}s in total",
+            "Pathfinding took {}s in total",
             (std::time::Instant::now() - start).as_secs_f32()
         );
+        let start = std::time::Instant::now();
 
         let (nodes, rooms, paths, space) = v4c.build();
         let mut v4s = rex::V4CorridorSmoother::new(paths, space);
@@ -111,7 +113,7 @@ fn spawn_mesh_builder(nodes: Vec<rex::Node>) -> mpsc::Receiver<graphics::MeshBui
             iterations += 1;
         }
         log::info!(
-            "Took {}s in total",
+            "Path smoothing took {}s in total",
             (std::time::Instant::now() - start).as_secs_f32()
         );
 

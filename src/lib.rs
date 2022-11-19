@@ -5,11 +5,13 @@ use std::{
     fs,
     ops::ControlFlow,
     path::{Path, PathBuf},
+    sync::{atomic::AtomicUsize, Arc},
 };
 
 use glam::{ivec2, vec2, IVec2, Vec2};
 use grid::RoomTemplate;
 use rand::{seq::SliceRandom, Rng};
+use rayon::prelude::{IntoParallelRefMutIterator, ParallelIterator};
 use space::Space;
 
 // TODO: Custom result type
@@ -266,6 +268,7 @@ impl V4CorridorSolver {
     pub fn iterate(&mut self) -> ControlFlow<(), ()> {
         let node = &self.nodes[self.current_node];
         let room = &self.rooms[self.current_node];
+        let room_mesh = &room.mesh;
         // Connect this node with its children
         for &child_idx in &node.children {
             let child_room = &self.rooms[child_idx];
@@ -273,9 +276,9 @@ impl V4CorridorSolver {
                 .mesh
                 .iter()
                 .min_by(|&&point_a, &&point_b| {
-                    (room.mesh[0] - point_a)
+                    (room_mesh[0] - point_a)
                         .length_squared()
-                        .total_cmp(&(room.mesh[0] - point_b).length_squared())
+                        .total_cmp(&(room_mesh[0] - point_b).length_squared())
                 })
                 .unwrap();
             let &start = room
@@ -317,8 +320,9 @@ impl V4CorridorSolver {
                     .length()
                     .floor() as i32
             };
+            let target_astar = world_units_to_astar_point(target);
             let success = |&point: &IVec2| {
-                let diff = point - world_units_to_astar_point(target);
+                let diff = point - target_astar;
                 (diff.dot(diff) as f32) < MIN_TARGET_DISTANCE
             };
             let path =
@@ -389,8 +393,8 @@ impl V4CorridorSmoother {
     }
 
     pub fn iterate(&mut self) -> ControlFlow<(), ()> {
-        let mut converged = self.paths.len();
-        for path in self.paths.iter_mut() {
+        let converged = Arc::new(AtomicUsize::from(self.paths.len()));
+        self.paths.par_iter_mut().for_each(|path| {
             let mut path_converged = true;
             let path_len = path.len();
             if path_len > 2 {
@@ -410,11 +414,11 @@ impl V4CorridorSmoother {
                 }
             }
             if !path_converged {
-                converged -= 1;
+                converged.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
             }
-        }
+        });
         // Finish if 95% of paths have converged
-        if converged >= self.paths.len() * 95 / 100 {
+        if converged.load(std::sync::atomic::Ordering::SeqCst) >= self.paths.len() * 95 / 100 {
             ControlFlow::Break(())
         } else {
             ControlFlow::Continue(())

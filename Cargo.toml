@@ -7,9 +7,11 @@ edition = "2021"
 members = ["visualizer"]
 
 [dependencies]
+ahash = "0.8.2"
 anyhow = "1.0.66"
 glam = { version = "0.22.0", features = ["mint"] }
 log = "0.4.17"
 mint = "0.5.9"
 pathfinding = "3.0.14"
 rand = "0.8.5"
+rayon = "1.6.0"

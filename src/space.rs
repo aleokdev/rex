@@ -1,5 +1,4 @@
-use std::collections::HashMap;
-
+use ahash::AHashMap;
 use glam::{vec2, IVec2, Vec2};
 
 use crate::grid::RoomId;
@@ -17,7 +16,7 @@ const CHUNK_SIZE: f32 = 4.;
 pub struct Space {
     /// Each chunk contains the allocations that intersect with it.
     /// Each chunk is a `CHUNK_SIZE` sized square, starting from the origin.
-    allocations: HashMap<IVec2, Vec<SpaceAllocation>>,
+    allocations: AHashMap<IVec2, Vec<SpaceAllocation>>,
 }
 
 /// The allocation didn't fit at the position given since part of the space it needed was already occupied.
