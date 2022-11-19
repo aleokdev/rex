@@ -287,7 +287,7 @@ impl V4CorridorSolver {
                         .total_cmp(&(target - point_b).length_squared())
                 })
                 .unwrap();
-            const RESOLUTION: f32 = 1.;
+            const RESOLUTION: f32 = 0.5;
             const MIN_TARGET_DISTANCE: f32 = RESOLUTION * RESOLUTION * std::f32::consts::SQRT_2;
             let astar_point_to_world_units = |point: IVec2| point.as_vec2() / RESOLUTION;
             let world_units_to_astar_point = |point: Vec2| (point * RESOLUTION).as_ivec2();
@@ -356,5 +356,72 @@ impl V4CorridorSolver {
 
     pub fn rooms(&self) -> &[Room] {
         self.rooms.as_ref()
+    }
+
+    pub fn build(self) -> (Vec<Node>, Vec<Room>, Vec<Vec<mint::Vector2<f32>>>, Space) {
+        (self.nodes, self.rooms, self.paths, self.space)
+    }
+}
+
+pub struct V4CorridorSmoother {
+    paths: Vec<Vec<mint::Vector2<f32>>>,
+    space: Space,
+}
+
+impl V4CorridorSmoother {
+    pub fn new(paths: Vec<Vec<mint::Vector2<f32>>>, space: Space) -> Self {
+        // x2 interpolation
+        let paths = paths
+            .into_iter()
+            .map(|path| {
+                path.windows(2)
+                    .flat_map(|ps| {
+                        (0..=4).map(|idx| {
+                            Vec2::from(ps[0])
+                                .lerp(Vec2::from(ps[1]), idx as f32 / 4.)
+                                .into()
+                        })
+                    })
+                    .collect()
+            })
+            .collect();
+        Self { paths, space }
+    }
+
+    pub fn iterate(&mut self) -> ControlFlow<(), ()> {
+        let mut converged = self.paths.len();
+        for path in self.paths.iter_mut() {
+            let mut path_converged = true;
+            let path_len = path.len();
+            if path_len > 2 {
+                for point_idx in 1..path_len - 1 {
+                    path[point_idx] = ((Vec2::from(path[point_idx - 1])
+                        + Vec2::from(path[point_idx])
+                        + Vec2::from(path[point_idx + 1]))
+                        / 3.)
+                        .into();
+                    let displacement =
+                        0.01 * self.space.force_displacement((path[point_idx]).into());
+                    path[point_idx] = (Vec2::from(path[point_idx]) + displacement).into();
+                    let displacement_length = displacement.length();
+                    if displacement_length > 0.13 {
+                        path_converged = false;
+                    }
+                }
+            }
+            if !path_converged {
+                converged -= 1;
+            }
+        }
+        // Finish if 95% of paths have converged
+        if converged >= self.paths.len() * 95 / 100 {
+            ControlFlow::Break(())
+        } else {
+            ControlFlow::Continue(())
+        }
+    }
+
+    pub fn paths(&self) -> &[Vec<mint::Vector2<f32>>] {
+        self.paths.as_ref()
     }
 }

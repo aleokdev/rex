@@ -1,9 +1,14 @@
 //! The simplest possible example that does something.
 #![allow(clippy::unnecessary_wraps)]
 
-use std::{ops::ControlFlow, path::PathBuf, sync::mpsc, thread};
+use std::{ops::ControlFlow, path::PathBuf, sync::mpsc, thread, time::Duration};
 
-use ggez::{conf::WindowMode, event, glam::*, graphics, input, Context};
+use ggez::{
+    conf::{WindowMode, WindowSetup},
+    event,
+    glam::*,
+    graphics, input, Context,
+};
 use rex::Room;
 
 struct MainState {
@@ -20,7 +25,7 @@ impl MainState {
         let rx = spawn_mesh_builder(nodes.clone());
 
         Ok(MainState {
-            pos: vec2(-50., -50.),
+            pos: vec2(-25., -25.),
             scale: 20.,
             mesh: graphics::Mesh::from_data(
                 ctx,
@@ -87,9 +92,32 @@ fn spawn_mesh_builder(nodes: Vec<rex::Node>) -> mpsc::Receiver<graphics::MeshBui
             (std::time::Instant::now() - start).as_secs_f32()
         );
 
+        let (nodes, rooms, paths, space) = v4c.build();
+        let mut v4s = rex::V4CorridorSmoother::new(paths, space);
+
+        loop {
+            match v4s.iterate() {
+                ControlFlow::Break(_) => break,
+                ControlFlow::Continue(_) => (),
+            }
+
+            if iterations % 10 == 0 {
+                let mut builder = graphics::MeshBuilder::new();
+                build_room_mesh(&mut builder, &rooms).unwrap();
+                build_paths_mesh(&mut builder, v4s.paths()).unwrap();
+                tx.send(builder).unwrap();
+            }
+
+            iterations += 1;
+        }
+        log::info!(
+            "Took {}s in total",
+            (std::time::Instant::now() - start).as_secs_f32()
+        );
+
         let mut builder = graphics::MeshBuilder::new();
-        build_room_mesh(&mut builder, &v4c.rooms()).unwrap();
-        build_paths_mesh(&mut builder, &v4c.paths()).unwrap();
+        build_room_mesh(&mut builder, &rooms).unwrap();
+        build_paths_mesh(&mut builder, &v4s.paths()).unwrap();
         tx.send(builder);
     });
     rx
@@ -197,8 +225,9 @@ impl event::EventHandler<anyhow::Error> for MainState {
 
 pub fn main() -> anyhow::Result<()> {
     env_logger::init();
-    let cb = ggez::ContextBuilder::new("super_simple", "ggez")
-        .window_mode(WindowMode::default().dimensions(1080., 720.));
+    let cb = ggez::ContextBuilder::new("rexvis", "aleok")
+        .window_mode(WindowMode::default().dimensions(1080., 720.))
+        .window_setup(WindowSetup::default().title("Rex Visualization & Generation Tool"));
     let (mut ctx, event_loop) = cb.build()?;
     let state = MainState::new(
         &std::env::args()

@@ -111,6 +111,15 @@ impl Space {
                 .any(|alloc| circle_contains(position, alloc.pos, alloc.radius))
         })
     }
+
+    pub fn force_displacement(&self, position: Vec2) -> Vec2 {
+        self.chunk_at(position).map_or(Vec2::ZERO, |chunk| {
+            chunk.iter().fold(Vec2::ZERO, |acc, x| {
+                let diff = position - x.pos;
+                acc + (x.radius - diff.length()).max(0.) * diff
+            })
+        })
+    }
 }
 
 fn circle_contains(pos: Vec2, circle_center: Vec2, r: f32) -> bool {
