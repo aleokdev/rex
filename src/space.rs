@@ -37,7 +37,7 @@ impl Space {
         const STEP: f32 = 1.;
 
         let mut try_pos = position + random_dir * starting_pos_radius;
-        while let Err(_) = self.allocate_at(id, try_pos, radius) {
+        while self.allocate_at(id, try_pos, radius).is_err() {
             try_pos += STEP * random_dir;
         }
 
@@ -91,7 +91,7 @@ impl Space {
     fn mut_chunk_at(&mut self, position: Vec2) -> &mut Vec<SpaceAllocation> {
         self.allocations
             .entry((position / CHUNK_SIZE).floor().as_ivec2())
-            .or_insert_with(|| vec![])
+            .or_insert_with(Vec::new)
     }
 
     pub fn is_point_allocated(&self, position: Vec2) -> bool {
