@@ -1,4 +1,5 @@
 mod app;
+mod buddy;
 mod buffer;
 mod cx;
 mod image;

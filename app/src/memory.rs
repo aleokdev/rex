@@ -1,4 +1,4 @@
-use crate::buffer::Buffer;
+use crate::{buddy::BuddyAllocator, buffer::Buffer, image::Image};
 use ash::vk;
 use std::collections::HashMap;
 use thiserror::Error;
@@ -7,13 +7,13 @@ const DEVICE_BLOCK_SIZE: u64 = 256 * 1024 * 1024;
 const HOST_BLOCK_SIZE: u64 = 64 * 1024 * 1024;
 
 #[derive(Error, Debug)]
-#[error("oom")]
+#[error("OOM")]
 struct OutOfMemory;
 
 #[derive(Clone)]
 pub enum Allocator {
     Linear { cursor: u64 },
-    //List {},
+    Buddy(BuddyAllocator),
 }
 
 impl Allocator {
@@ -23,10 +23,9 @@ impl Allocator {
         size: u64,
         alignment: u64,
     ) -> anyhow::Result<(u64, u64)> {
+        let size = align(alignment, size);
         match self {
             Allocator::Linear { cursor } => {
-                let size = align(alignment, size);
-
                 if size > block_size {
                     return Err(anyhow::anyhow!("linear allocator: size > block_size"));
                 }
@@ -38,6 +37,10 @@ impl Allocator {
 
                 Err(anyhow::Error::new(OutOfMemory))
             }
+            Allocator::Buddy(allocator) => allocator
+                .allocate((u64::BITS - size.leading_zeros()) as u8)
+                .ok_or_else(|| anyhow::Error::new(OutOfMemory))
+                .map(|offset| (offset, size.next_power_of_two())),
         }
     }
 
@@ -48,6 +51,7 @@ impl Allocator {
                 *cursor = 0;
                 Ok(())
             }
+            Allocator::Buddy(allocator) => allocator.free(),
         }
     }
 }
@@ -141,6 +145,38 @@ impl GpuMemory {
         let buffer = self.device.create_buffer(&info, None)?;
         let requirements = self.device.get_buffer_memory_requirements(buffer);
 
+        let allocation = match self.allocate_scratch(usage, &requirements, mapped) {
+            Ok(x) => x,
+            Err(e) => {
+                self.device.destroy_buffer(buffer, None);
+                return Err(e);
+            }
+        };
+
+        self.device
+            .bind_buffer_memory(buffer, allocation.memory, allocation.offset)?;
+
+        Ok(Buffer {
+            raw: buffer,
+            allocation,
+        })
+    }
+
+    pub unsafe fn free_scratch(&mut self) -> anyhow::Result<()> {
+        for memory_type in self.linear_linear.values_mut() {
+            for block in &mut memory_type.memory_blocks {
+                block.allocator.free(None)?;
+            }
+        }
+        Ok(())
+    }
+
+    unsafe fn allocate_scratch(
+        &mut self,
+        usage: MemoryUsage,
+        requirements: &vk::MemoryRequirements,
+        mapped: bool,
+    ) -> anyhow::Result<GpuAllocation> {
         let (memory_type, memory_props) = find_properties(
             &self.memory_props,
             requirements.memory_type_bits,
@@ -154,6 +190,12 @@ impl GpuMemory {
             )
         })
         .ok_or_else(|| anyhow::anyhow!("no compatible memory on GPU"))?;
+
+        if mapped && !memory_props.contains(vk::MemoryPropertyFlags::HOST_VISIBLE) {
+            return Err(anyhow::anyhow!(
+                "tried to create mappable memory with non-mappable memory properties"
+            ));
+        }
 
         let memory_type = self
             .linear_linear
@@ -174,21 +216,16 @@ impl GpuMemory {
         let (memory, offset, size) =
             memory_type.allocate(&self.device, requirements.size, requirements.alignment)?;
 
-        self.device.bind_buffer_memory(buffer, memory, offset)?;
-
-        let allocation = GpuAllocation {
+        Ok(GpuAllocation {
             memory,
             offset,
             size,
-        };
-
-        Ok(Buffer {
-            raw: buffer,
-            allocation,
         })
     }
 
-    pub fn free_scratch(&mut self) {}
+    pub unsafe fn allocate_image(&mut self, info: &vk::ImageCreateInfo) -> anyhow::Result<Image> {
+        let image = self.device.create_image(info, None)?;
+    }
 }
 
 #[derive(Debug)]
