@@ -5,6 +5,16 @@ use thiserror::Error;
 
 const DEVICE_BLOCK_SIZE: u64 = 256 * 1024 * 1024;
 const HOST_BLOCK_SIZE: u64 = 64 * 1024 * 1024;
+const MIN_ALLOC_SIZE: u64 = 1024;
+const BASE_ORDER: u8 = log2_ceil(MIN_ALLOC_SIZE) as u8;
+
+const fn log2_ceil(x: u64) -> u32 {
+    u64::BITS - x.leading_zeros()
+}
+
+const fn level_count(size: u64) -> u8 {
+    log2_ceil(size / MIN_ALLOC_SIZE) as u8
+}
 
 #[derive(Error, Debug)]
 #[error("OOM")]
@@ -51,7 +61,14 @@ impl Allocator {
                 *cursor = 0;
                 Ok(())
             }
-            Allocator::Buddy(allocator) => allocator.free(),
+            Allocator::Buddy(allocator) => {
+                let allocation = allocation.ok_or_else(|| anyhow::anyhow!("no allocation"))?;
+                allocator.deallocate(
+                    allocation.offset,
+                    (u64::BITS - allocation.size.leading_zeros()) as u8,
+                );
+                Ok(())
+            }
         }
     }
 }
@@ -177,7 +194,7 @@ impl GpuMemory {
         requirements: &vk::MemoryRequirements,
         mapped: bool,
     ) -> anyhow::Result<GpuAllocation> {
-        let (memory_type, memory_props) = find_properties(
+        let (memory_type_index, memory_props) = find_properties(
             &self.memory_props,
             requirements.memory_type_bits,
             usage.flags(false),
@@ -199,11 +216,11 @@ impl GpuMemory {
 
         let memory_type = self
             .linear_linear
-            .entry(memory_type)
+            .entry(memory_type_index)
             .or_insert_with(|| MemoryType {
                 memory_blocks: vec![],
                 memory_props,
-                memory_type_index: memory_type,
+                memory_type_index,
                 block_size: if memory_props.contains(vk::MemoryPropertyFlags::DEVICE_LOCAL) {
                     DEVICE_BLOCK_SIZE
                 } else {
@@ -220,11 +237,67 @@ impl GpuMemory {
             memory,
             offset,
             size,
+            memory_type_index,
         })
     }
 
     pub unsafe fn allocate_image(&mut self, info: &vk::ImageCreateInfo) -> anyhow::Result<Image> {
         let image = self.device.create_image(info, None)?;
+        let requirements = self.device.get_image_memory_requirements(image);
+
+        let (memory_type_index, memory_props) = find_properties(
+            &self.memory_props,
+            requirements.memory_type_bits,
+            vk::MemoryPropertyFlags::DEVICE_LOCAL,
+        )
+        .ok_or_else(|| anyhow::anyhow!("no compatible memory on GPU"))?;
+
+        let memory_type = self
+            .images
+            .entry(memory_type_index)
+            .or_insert_with(|| MemoryType {
+                memory_blocks: vec![],
+                memory_props,
+                memory_type_index,
+                block_size: DEVICE_BLOCK_SIZE,
+                mappable: false,
+                default_allocator: Allocator::Buddy(BuddyAllocator::new(
+                    level_count(DEVICE_BLOCK_SIZE),
+                    BASE_ORDER,
+                )),
+            });
+
+        let (memory, offset, size) =
+            memory_type.allocate(&self.device, requirements.size, requirements.alignment)?;
+
+        self.device.bind_image_memory(image, memory, offset)?;
+
+        Ok(Image {
+            raw: image,
+            allocation: Some(GpuAllocation {
+                memory,
+                offset,
+                size,
+                memory_type_index,
+            }),
+            info: info.clone(),
+        })
+    }
+
+    pub unsafe fn free_image(&mut self, allocation: GpuAllocation) -> anyhow::Result<()> {
+        self.images
+            .get_mut(&allocation.memory_type_index)
+            .map(|memory_type| {
+                memory_type
+                    .memory_blocks
+                    .iter_mut()
+                    .find(|x| x.raw == allocation.memory)
+            })
+            .flatten()
+            .expect("pls dont tamper with GpuAllocation")
+            .allocator
+            .free(Some(&allocation))?;
+        Ok(())
     }
 }
 
@@ -233,6 +306,7 @@ pub struct GpuAllocation {
     pub memory: vk::DeviceMemory,
     pub offset: vk::DeviceAddress,
     pub size: vk::DeviceSize,
+    pub memory_type_index: u32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
