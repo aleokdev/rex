@@ -1,3 +1,10 @@
+mod buddy;
+mod buffer;
+mod cx;
+mod image;
+mod memory;
+mod util;
+
 use winit::{
     event::{Event, WindowEvent},
     event_loop::{ControlFlow, EventLoop},

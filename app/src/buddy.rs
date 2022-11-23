@@ -22,8 +22,8 @@ impl BuddyAllocator {
         for level in 0..level_count {
             let order = max_order - level;
             let size = 1 << (level as usize);
-            for block in start..(start + size) {
-                tree[block] = Block::new_free(order);
+            for block in tree.iter_mut().skip(start).take(size) {
+                *block = Block::new_free(order);
             }
             start += size;
         }
@@ -78,7 +78,7 @@ impl BuddyAllocator {
 
         for _ in 0..max_level {
             let right_index = node_index & !1;
-            node_index = node_index >> 1;
+            node_index >>= 1;
 
             let left = self.block(right_index - 1).order_free;
             let right = self.block(right_index).order_free;
@@ -123,7 +123,7 @@ impl BuddyAllocator {
         let mut node_index = index;
 
         for order in order + 1..=self.max_order {
-            node_index = node_index >> 1;
+            node_index >>= 1;
             self.update_block(node_index, order);
         }
     }
