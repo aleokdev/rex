@@ -159,7 +159,7 @@ impl GpuMemory {
         usage: MemoryUsage,
         mapped: bool,
     ) -> anyhow::Result<Buffer> {
-        let buffer = self.device.create_buffer(&info, None)?;
+        let buffer = self.device.create_buffer(info, None)?;
         let requirements = self.device.get_buffer_memory_requirements(buffer);
 
         let allocation = match self.allocate_scratch(usage, &requirements, mapped) {
@@ -280,20 +280,19 @@ impl GpuMemory {
                 size,
                 memory_type_index,
             }),
-            info: info.clone(),
+            info: *info,
         })
     }
 
     pub unsafe fn free_image(&mut self, allocation: GpuAllocation) -> anyhow::Result<()> {
         self.images
             .get_mut(&allocation.memory_type_index)
-            .map(|memory_type| {
+            .and_then(|memory_type| {
                 memory_type
                     .memory_blocks
                     .iter_mut()
                     .find(|x| x.raw == allocation.memory)
             })
-            .flatten()
             .expect("pls dont tamper with GpuAllocation")
             .allocator
             .free(Some(&allocation))?;
@@ -318,22 +317,21 @@ pub enum MemoryUsage {
 
 impl MemoryUsage {
     fn flags(self, downlevel: bool) -> vk::MemoryPropertyFlags {
-        match self {
-            MemoryUsage::Gpu => vk::MemoryPropertyFlags::DEVICE_LOCAL,
-            MemoryUsage::CpuToGpu if !downlevel => {
+        match (self, downlevel) {
+            (MemoryUsage::Gpu, _) => vk::MemoryPropertyFlags::DEVICE_LOCAL,
+            (MemoryUsage::CpuToGpu, false) => {
                 vk::MemoryPropertyFlags::HOST_VISIBLE
                     | vk::MemoryPropertyFlags::HOST_COHERENT
                     | vk::MemoryPropertyFlags::DEVICE_LOCAL
             }
-            MemoryUsage::GpuToCpu if !downlevel => {
+            (MemoryUsage::GpuToCpu, false) => {
                 vk::MemoryPropertyFlags::HOST_VISIBLE
                     | vk::MemoryPropertyFlags::HOST_COHERENT
                     | vk::MemoryPropertyFlags::HOST_CACHED
             }
-            MemoryUsage::CpuToGpu | MemoryUsage::GpuToCpu if downlevel => {
+            (MemoryUsage::CpuToGpu | MemoryUsage::GpuToCpu, true) => {
                 vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT
             }
-            _ => unreachable!(),
         }
     }
 }
