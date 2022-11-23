@@ -13,8 +13,8 @@ pub fn subresource_range(
     };
 
     let level_count = match mip_levels.end_bound() {
-        Bound::Included(x) => *x,
-        Bound::Excluded(x) => *x - 1,
+        Bound::Included(x) => *x + 1,
+        Bound::Excluded(x) => *x,
         Bound::Unbounded => vk::REMAINING_MIP_LEVELS,
     } - base_mip_level;
 
@@ -25,8 +25,8 @@ pub fn subresource_range(
     };
 
     let layer_count = match mip_levels.end_bound() {
-        Bound::Included(x) => *x,
-        Bound::Excluded(x) => *x - 1,
+        Bound::Included(x) => *x + 1,
+        Bound::Excluded(x) => *x,
         Bound::Unbounded => vk::REMAINING_ARRAY_LAYERS,
     } - base_array_layer;
 
