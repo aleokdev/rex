@@ -35,12 +35,20 @@ pub struct Cx {
     pub physical_device: vk::PhysicalDevice,
     pub device: ash::Device,
     pub queue: (vk::Queue, u32),
-    pub swapchain_loader: Option<Swapchain>,
+    pub swapchain_loader: Swapchain,
     pub swapchain: vk::SwapchainKHR,
     pub swapchain_images: Vec<Texture>,
 
     pub memory: GpuMemory,
     pub frame: u64,
+
+    renderpass: vk::RenderPass,
+    framebuffers: Vec<vk::Framebuffer>,
+}
+
+pub struct SwapchainData {
+    pub swapchain: vk::SwapchainKHR,
+    pub images: Vec<Texture>,
 }
 
 impl Cx {
@@ -169,11 +177,70 @@ impl Cx {
 
             let memory = GpuMemory::new(&device, &instance, physical_device)?;
 
-            let mut out = Cx {
+            let swapchain_loader = Swapchain::new(&instance, &device);
+
+            let SwapchainData {
+                swapchain,
+                images: swapchain_images,
+            } = Self::create_swapchain(
+                &instance,
+                &device,
+                surface_format,
+                &surface_loader,
+                physical_device,
+                surface,
+                &swapchain_loader,
+                width,
+                height,
+            )?;
+
+            let color_attachment = vk::AttachmentDescription::builder()
+                .format(surface_format.format)
+                .samples(vk::SampleCountFlags::TYPE_1)
+                .load_op(vk::AttachmentLoadOp::CLEAR)
+                .store_op(vk::AttachmentStoreOp::STORE)
+                .stencil_load_op(vk::AttachmentLoadOp::DONT_CARE)
+                .stencil_store_op(vk::AttachmentStoreOp::DONT_CARE)
+                .initial_layout(vk::ImageLayout::UNDEFINED)
+                .final_layout(vk::ImageLayout::PRESENT_SRC_KHR)
+                .build();
+            let color_attachment_ref = vk::AttachmentReference::builder()
+                .attachment(0)
+                .layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
+                .build();
+            let subpass = vk::SubpassDescription::builder()
+                .pipeline_bind_point(vk::PipelineBindPoint::GRAPHICS)
+                .color_attachments(&[color_attachment_ref])
+                .build();
+            let color_attachments = &[color_attachment];
+            let subpasses = &[subpass];
+            let renderpass_info = vk::RenderPassCreateInfo::builder()
+                .attachments(color_attachments)
+                .subpasses(subpasses);
+            let renderpass = unsafe { device.create_render_pass(&renderpass_info, None)? };
+
+            let framebuffers: Vec<vk::Framebuffer> = swapchain_images
+                .iter()
+                .map(|tex| tex.view)
+                .map(|img_view| {
+                    let attachments = &[img_view];
+                    let framebuffer_info = vk::FramebufferCreateInfo::builder()
+                        .render_pass(renderpass)
+                        .attachments(attachments)
+                        .width(width)
+                        .height(height)
+                        .layers(1);
+                    let framebuffer = unsafe { device.create_framebuffer(&framebuffer_info, None) };
+                    framebuffer
+                })
+                .collect::<ash::prelude::VkResult<Vec<vk::Framebuffer>>>()?;
+
+            Ok(Cx {
                 window,
                 width,
                 height,
 
+                swapchain_loader,
                 instance,
                 debug_utils_loader,
                 debug_callback,
@@ -183,24 +250,52 @@ impl Cx {
                 physical_device,
                 device,
                 queue,
-                swapchain_loader: None,
-                swapchain: vk::SwapchainKHR::null(),
-                swapchain_images: vec![],
+                swapchain,
+                swapchain_images,
+
+                renderpass,
+                framebuffers,
 
                 memory,
                 frame: 0,
-            };
-
-            out.recreate_swapchain(width, height)?;
-
-            Ok(out)
+            })
         }
     }
 
     pub unsafe fn recreate_swapchain(&mut self, width: u32, height: u32) -> anyhow::Result<()> {
-        let surface_caps = self
-            .surface_loader
-            .get_physical_device_surface_capabilities(self.physical_device, self.surface)?;
+        let SwapchainData { swapchain, images } = Self::create_swapchain(
+            &self.instance,
+            &self.device,
+            self.surface_format,
+            &self.surface_loader,
+            self.physical_device,
+            self.surface,
+            &self.swapchain_loader,
+            width,
+            height,
+        )?;
+
+        self.swapchain = swapchain;
+        self.swapchain_images = images;
+
+        // TODO also recreate framebuffers
+
+        Ok(())
+    }
+
+    unsafe fn create_swapchain(
+        instance: &ash::Instance,
+        device: &ash::Device,
+        surface_format: vk::SurfaceFormatKHR,
+        surface_loader: &ash::extensions::khr::Surface,
+        physical_device: vk::PhysicalDevice,
+        surface: vk::SurfaceKHR,
+        swapchain_loader: &ash::extensions::khr::Swapchain,
+        width: u32,
+        height: u32,
+    ) -> anyhow::Result<SwapchainData> {
+        let surface_caps =
+            surface_loader.get_physical_device_surface_capabilities(physical_device, surface)?;
 
         let mut min_image_count = surface_caps.min_image_count + 1;
         if surface_caps.max_image_count > 0 {
@@ -216,36 +311,29 @@ impl Cx {
             surface_caps.current_transform
         };
 
-        let present_mode = self
-            .surface_loader
-            .get_physical_device_surface_present_modes(self.physical_device, self.surface)?
+        let present_mode = surface_loader
+            .get_physical_device_surface_present_modes(physical_device, surface)?
             .into_iter()
             .find(|&mode| mode == vk::PresentModeKHR::MAILBOX)
             .unwrap_or(vk::PresentModeKHR::FIFO);
 
-        let (swapchain_loader, swapchain) = Self::create_swapchain(
-            &self.instance,
-            &self.device,
-            &vk::SwapchainCreateInfoKHR::builder()
-                .surface(self.surface)
-                .min_image_count(min_image_count)
-                .image_format(self.surface_format.format)
-                .image_color_space(self.surface_format.color_space)
-                .image_extent(vk::Extent2D { width, height })
-                .image_array_layers(1)
-                .image_usage(vk::ImageUsageFlags::COLOR_ATTACHMENT)
-                .image_sharing_mode(vk::SharingMode::EXCLUSIVE)
-                .pre_transform(pre_transform)
-                .composite_alpha(vk::CompositeAlphaFlagsKHR::OPAQUE)
-                .present_mode(present_mode)
-                .clipped(true),
-        )?;
+        let info = vk::SwapchainCreateInfoKHR::builder()
+            .surface(surface)
+            .min_image_count(min_image_count)
+            .image_format(surface_format.format)
+            .image_color_space(surface_format.color_space)
+            .image_extent(vk::Extent2D { width, height })
+            .image_array_layers(1)
+            .image_usage(vk::ImageUsageFlags::COLOR_ATTACHMENT)
+            .image_sharing_mode(vk::SharingMode::EXCLUSIVE)
+            .pre_transform(pre_transform)
+            .composite_alpha(vk::CompositeAlphaFlagsKHR::OPAQUE)
+            .present_mode(present_mode)
+            .clipped(true);
 
-        self.swapchain_loader = Some(swapchain_loader.clone());
-        self.swapchain = swapchain;
-
-        self.swapchain_images = swapchain_loader
-            .get_swapchain_images(self.swapchain)?
+        let swapchain = swapchain_loader.create_swapchain(&info, None)?;
+        let swapchain_images = swapchain_loader
+            .get_swapchain_images(swapchain)?
             .into_iter()
             .map(|image| -> anyhow::Result<_> {
                 let image = Image {
@@ -254,7 +342,7 @@ impl Cx {
                     // synthesise some assumed information about the swapchain images
                     info: vk::ImageCreateInfo::builder()
                         .image_type(vk::ImageType::TYPE_2D)
-                        .format(self.surface_format.format)
+                        .format(surface_format.format)
                         .extent(vk::Extent3D {
                             width,
                             height,
@@ -269,11 +357,11 @@ impl Cx {
                         .build(),
                 };
 
-                let view = self.device.create_image_view(
+                let view = device.create_image_view(
                     &vk::ImageViewCreateInfo::builder()
                         .image(image.raw)
                         .view_type(vk::ImageViewType::TYPE_2D)
-                        .format(self.surface_format.format)
+                        .format(surface_format.format)
                         .subresource_range(subresource_range(
                             vk::ImageAspectFlags::COLOR,
                             0..1,
@@ -286,32 +374,29 @@ impl Cx {
             })
             .collect::<anyhow::Result<_>>()?;
 
-        Ok(())
-    }
-
-    unsafe fn create_swapchain(
-        instance: &ash::Instance,
-        device: &ash::Device,
-        info: &vk::SwapchainCreateInfoKHR,
-    ) -> anyhow::Result<(Swapchain, vk::SwapchainKHR)> {
-        let swapchain_loader = Swapchain::new(instance, device);
-        let swapchain = swapchain_loader.create_swapchain(info, None)?;
-        Ok((swapchain_loader, swapchain))
+        Ok(SwapchainData {
+            swapchain,
+            images: swapchain_images,
+        })
     }
 }
 
 impl Drop for Cx {
     fn drop(&mut self) {
         unsafe {
-            if let Some(swapchain_loader) = &self.swapchain_loader {
-                swapchain_loader.destroy_swapchain(self.swapchain, None);
+            self.swapchain_loader
+                .destroy_swapchain(self.swapchain, None);
 
-                self.device.destroy_device(None);
-                self.surface_loader.destroy_surface(self.surface, None);
-                self.debug_utils_loader
-                    .destroy_debug_utils_messenger(self.debug_callback, None);
-                self.instance.destroy_instance(None);
-            }
+            self.framebuffers
+                .iter()
+                .for_each(|&fb| self.device.destroy_framebuffer(fb, None));
+            self.device.destroy_render_pass(self.renderpass, None);
+
+            self.device.destroy_device(None);
+            self.surface_loader.destroy_surface(self.surface, None);
+            self.debug_utils_loader
+                .destroy_debug_utils_messenger(self.debug_callback, None);
+            self.instance.destroy_instance(None);
         }
     }
 }
