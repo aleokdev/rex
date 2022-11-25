@@ -42,8 +42,11 @@ pub struct Cx {
     pub memory: GpuMemory,
     pub frame: u64,
 
-    renderpass: vk::RenderPass,
-    framebuffers: Vec<vk::Framebuffer>,
+    pub renderpass: vk::RenderPass,
+    pub framebuffers: Vec<vk::Framebuffer>,
+    pub present_semaphore: vk::Semaphore,
+    pub render_semaphore: vk::Semaphore,
+    pub render_fence: vk::Fence,
 }
 
 pub struct SwapchainData {
@@ -235,6 +238,14 @@ impl Cx {
                 })
                 .collect::<ash::prelude::VkResult<Vec<vk::Framebuffer>>>()?;
 
+            let render_fence = device.create_fence(
+                &vk::FenceCreateInfo::builder().flags(vk::FenceCreateFlags::SIGNALED),
+                None,
+            )?;
+            let semaphore_info = vk::SemaphoreCreateInfo::builder();
+            let present_semaphore = device.create_semaphore(&semaphore_info, None)?;
+            let render_semaphore = device.create_semaphore(&semaphore_info, None)?;
+
             Ok(Cx {
                 window,
                 width,
@@ -258,6 +269,10 @@ impl Cx {
 
                 memory,
                 frame: 0,
+
+                render_fence,
+                present_semaphore,
+                render_semaphore,
             })
         }
     }
