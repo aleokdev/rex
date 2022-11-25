@@ -5,6 +5,8 @@ mod image;
 mod memory;
 mod util;
 
+use std::time::Duration;
+
 use winit::{
     event::{Event, WindowEvent},
     event_loop::{ControlFlow, EventLoop},
@@ -22,7 +24,87 @@ impl App {
         Ok(App { cx })
     }
 
-    fn redraw(&mut self) {}
+    fn redraw(&mut self) -> anyhow::Result<()> {
+        unsafe {
+            self.cx.device.wait_for_fences(
+                &[self.cx.render_fence],
+                true,
+                Duration::from_secs(1).as_nanos() as u64,
+            )?;
+
+            self.cx.device.reset_fences(&[self.cx.render_fence])?;
+
+            let (swapchain_img_index, _is_suboptimal) =
+                self.cx.swapchain_loader.acquire_next_image(
+                    self.cx.swapchain,
+                    Duration::from_secs(1).as_nanos() as u64,
+                    self.cx.present_semaphore,
+                    ash::vk::Fence::null(),
+                )?;
+
+            self.cx.device.reset_command_buffer(
+                self.cx.render_cmds,
+                ash::vk::CommandBufferResetFlags::empty(),
+            )?;
+
+            self.cx.device.begin_command_buffer(
+                self.cx.render_cmds,
+                &ash::vk::CommandBufferBeginInfo::builder()
+                    .flags(ash::vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT),
+            )?;
+
+            self.cx.device.cmd_begin_render_pass(
+                self.cx.render_cmds,
+                &ash::vk::RenderPassBeginInfo::builder()
+                    .clear_values(&[ash::vk::ClearValue {
+                        color: ash::vk::ClearColorValue {
+                            float32: [0., 0., 0., 1.],
+                        },
+                    }])
+                    .render_area(
+                        ash::vk::Rect2D::builder()
+                            .extent(ash::vk::Extent2D {
+                                width: self.cx.width,
+                                height: self.cx.height,
+                            })
+                            .build(),
+                    )
+                    .render_pass(self.cx.renderpass)
+                    .framebuffer(self.cx.framebuffers[swapchain_img_index as usize]),
+                ash::vk::SubpassContents::INLINE,
+            );
+
+            self.cx.device.cmd_end_render_pass(self.cx.render_cmds);
+            self.cx.device.end_command_buffer(self.cx.render_cmds)?;
+
+            let wait_stage = &[ash::vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT];
+            let wait_semaphores = &[self.cx.present_semaphore];
+            let signal_semaphores = &[self.cx.render_semaphore];
+            let cmd_buffers = &[self.cx.render_cmds];
+            let submit = ash::vk::SubmitInfo::builder()
+                .wait_dst_stage_mask(wait_stage)
+                .signal_semaphores(signal_semaphores)
+                .wait_semaphores(wait_semaphores)
+                .command_buffers(cmd_buffers)
+                .build();
+
+            self.cx
+                .device
+                .queue_submit(self.cx.render_queue.0, &[submit], self.cx.render_fence)?;
+
+            self.cx.swapchain_loader.queue_present(
+                self.cx.render_queue.0,
+                &ash::vk::PresentInfoKHR::builder()
+                    .swapchains(&[self.cx.swapchain])
+                    .wait_semaphores(&[self.cx.render_semaphore])
+                    .image_indices(&[swapchain_img_index]),
+            )?;
+
+            self.cx.frame += 1;
+        }
+
+        Ok(())
+    }
 }
 
 pub fn run(width: u32, height: u32) -> anyhow::Result<()> {
@@ -46,7 +128,7 @@ pub fn run(width: u32, height: u32) -> anyhow::Result<()> {
             },
             Event::MainEventsCleared => app.cx.window.request_redraw(),
             Event::RedrawRequested(_) => {
-                app.redraw();
+                app.redraw().unwrap();
             }
             _ => {}
         }

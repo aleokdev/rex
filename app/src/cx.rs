@@ -14,6 +14,7 @@ use raw_window_handle::{HasRawDisplayHandle, HasRawWindowHandle};
 use std::{
     borrow::Cow,
     ffi::{CStr, CString},
+    time::Duration,
 };
 use winit::{
     dpi::PhysicalSize,
@@ -34,13 +35,16 @@ pub struct Cx {
     pub surface_format: vk::SurfaceFormatKHR,
     pub physical_device: vk::PhysicalDevice,
     pub device: ash::Device,
-    pub queue: (vk::Queue, u32),
     pub swapchain_loader: Swapchain,
     pub swapchain: vk::SwapchainKHR,
     pub swapchain_images: Vec<Texture>,
 
     pub memory: GpuMemory,
     pub frame: u64,
+
+    pub render_queue: (vk::Queue, u32),
+    pub command_pool: vk::CommandPool,
+    pub render_cmds: vk::CommandBuffer,
 
     pub renderpass: vk::RenderPass,
     pub framebuffers: Vec<vk::Framebuffer>,
@@ -246,6 +250,19 @@ impl Cx {
             let present_semaphore = device.create_semaphore(&semaphore_info, None)?;
             let render_semaphore = device.create_semaphore(&semaphore_info, None)?;
 
+            let command_pool = device.create_command_pool(
+                &vk::CommandPoolCreateInfo::builder()
+                    .queue_family_index(queue.1)
+                    .flags(vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER),
+                None,
+            )?;
+            let render_cmd = device.allocate_command_buffers(
+                &vk::CommandBufferAllocateInfo::builder()
+                    .command_buffer_count(1)
+                    .level(vk::CommandBufferLevel::PRIMARY)
+                    .command_pool(command_pool),
+            )?[0];
+
             Ok(Cx {
                 window,
                 width,
@@ -260,9 +277,12 @@ impl Cx {
                 surface_format,
                 physical_device,
                 device,
-                queue,
                 swapchain,
                 swapchain_images,
+
+                render_queue: queue,
+                command_pool,
+                render_cmds: render_cmd,
 
                 renderpass,
                 framebuffers,
@@ -278,6 +298,15 @@ impl Cx {
     }
 
     pub unsafe fn recreate_swapchain(&mut self, width: u32, height: u32) -> anyhow::Result<()> {
+        self.swapchain_loader
+            .destroy_swapchain(self.swapchain, None);
+        self.framebuffers
+            .iter()
+            .for_each(|&fb| self.device.destroy_framebuffer(fb, None));
+        self.swapchain_images
+            .iter()
+            .for_each(|img| self.device.destroy_image_view(img.view, None));
+
         let SwapchainData { swapchain, images } = Self::create_swapchain(
             &self.instance,
             &self.device,
@@ -293,7 +322,26 @@ impl Cx {
         self.swapchain = swapchain;
         self.swapchain_images = images;
 
-        // TODO also recreate framebuffers
+        self.framebuffers = self
+            .swapchain_images
+            .iter()
+            .map(|tex| tex.view)
+            .map(|img_view| {
+                let attachments = &[img_view];
+                let framebuffer_info = vk::FramebufferCreateInfo::builder()
+                    .render_pass(self.renderpass)
+                    .attachments(attachments)
+                    .width(width)
+                    .height(height)
+                    .layers(1);
+                let framebuffer =
+                    unsafe { self.device.create_framebuffer(&framebuffer_info, None) };
+                framebuffer
+            })
+            .collect::<ash::prelude::VkResult<Vec<vk::Framebuffer>>>()?;
+
+        self.width = width;
+        self.height = height;
 
         Ok(())
     }
@@ -399,12 +447,26 @@ impl Cx {
 impl Drop for Cx {
     fn drop(&mut self) {
         unsafe {
+            self.device.wait_for_fences(
+                &[self.render_fence],
+                true,
+                Duration::from_secs(1).as_nanos() as u64,
+            );
+            self.device.destroy_fence(self.render_fence, None);
+            self.device.destroy_semaphore(self.render_semaphore, None);
+            self.device.destroy_semaphore(self.present_semaphore, None);
+
+            self.device.destroy_command_pool(self.command_pool, None);
+
             self.swapchain_loader
                 .destroy_swapchain(self.swapchain, None);
 
             self.framebuffers
                 .iter()
                 .for_each(|&fb| self.device.destroy_framebuffer(fb, None));
+            self.swapchain_images
+                .iter()
+                .for_each(|img| self.device.destroy_image_view(img.view, None));
             self.device.destroy_render_pass(self.renderpass, None);
 
             self.device.destroy_device(None);
