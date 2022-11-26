@@ -12,11 +12,7 @@ use ash::{
 };
 use cstr::cstr;
 use raw_window_handle::{HasRawDisplayHandle, HasRawWindowHandle};
-use std::{
-    borrow::Cow,
-    ffi::{CStr, CString},
-    time::Duration,
-};
+use std::{borrow::Cow, ffi::CStr, time::Duration};
 use winit::{
     dpi::PhysicalSize,
     event_loop::EventLoop,
@@ -73,7 +69,7 @@ impl Cx {
             .build(event_loop)?;
 
         unsafe {
-            let layers = [CString::new("VK_LAYER_KHRONOS_validation")?];
+            let layers = [cstr!("VK_LAYER_KHRONOS_validation")];
             let raw_layers = layers
                 .iter()
                 .map(|layer| layer.as_ptr())
@@ -89,9 +85,9 @@ impl Cx {
                 &vk::InstanceCreateInfo::builder()
                     .application_info(
                         &vk::ApplicationInfo::builder()
-                            .application_name(&CString::new("Rex")?)
+                            .application_name(cstr!("Rex"))
                             .application_version(0)
-                            .engine_name(&CString::new("RexEngine")?)
+                            .engine_name(cstr!("RexEngine"))
                             .engine_version(0)
                             .api_version(vk::API_VERSION_1_2),
                     )
@@ -149,7 +145,7 @@ impl Cx {
                     format.format == vk::Format::B8G8R8A8_SRGB
                         && format.color_space == vk::ColorSpaceKHR::SRGB_NONLINEAR
                 })
-                .cloned()
+                .copied()
                 .unwrap_or(surface_formats[0]);
 
             let mut queue = None;
@@ -205,6 +201,7 @@ impl Cx {
                 &swapchain_loader,
                 width,
                 height,
+                vk::SwapchainKHR::null(),
             )?;
 
             let color_attachment = vk::AttachmentDescription::builder()
@@ -387,8 +384,6 @@ impl Cx {
     }
 
     pub unsafe fn recreate_swapchain(&mut self, width: u32, height: u32) -> anyhow::Result<()> {
-        self.swapchain_loader
-            .destroy_swapchain(self.swapchain, None);
         self.framebuffers
             .iter()
             .for_each(|&fb| self.device.destroy_framebuffer(fb, None));
@@ -406,7 +401,10 @@ impl Cx {
             &self.swapchain_loader,
             width,
             height,
+            self.swapchain,
         )?;
+        self.swapchain_loader
+            .destroy_swapchain(self.swapchain, None);
 
         self.swapchain = swapchain;
         self.swapchain_images = images;
@@ -434,6 +432,7 @@ impl Cx {
         swapchain_loader: &ash::extensions::khr::Swapchain,
         width: u32,
         height: u32,
+        old_swapchain: vk::SwapchainKHR,
     ) -> anyhow::Result<SwapchainData> {
         let surface_caps =
             surface_loader.get_physical_device_surface_capabilities(physical_device, surface)?;
@@ -470,6 +469,7 @@ impl Cx {
             .pre_transform(pre_transform)
             .composite_alpha(vk::CompositeAlphaFlagsKHR::OPAQUE)
             .present_mode(present_mode)
+            .old_swapchain(old_swapchain)
             .clipped(true);
 
         let swapchain = swapchain_loader.create_swapchain(&info, None)?;

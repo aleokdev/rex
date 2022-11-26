@@ -124,6 +124,11 @@ pub fn run(width: u32, height: u32) -> anyhow::Result<()> {
         match event {
             Event::WindowEvent { event, .. } => match event {
                 WindowEvent::Resized(new_size) => unsafe {
+                    app.cx.device.wait_for_fences(
+                        &[app.cx.render_fence],
+                        true,
+                        Duration::from_secs(1).as_nanos() as u64,
+                    );
                     app.cx
                         .recreate_swapchain(new_size.width, new_size.height)
                         .unwrap();
