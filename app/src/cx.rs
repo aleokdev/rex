@@ -190,7 +190,6 @@ impl Cx {
                 swapchain,
                 images: swapchain_images,
             } = Self::create_swapchain(
-                &instance,
                 &device,
                 surface_format,
                 &surface_loader,
@@ -224,23 +223,15 @@ impl Cx {
             let renderpass_info = vk::RenderPassCreateInfo::builder()
                 .attachments(color_attachments)
                 .subpasses(subpasses);
-            let renderpass = unsafe { device.create_render_pass(&renderpass_info, None)? };
+            let renderpass = device.create_render_pass(&renderpass_info, None)?;
 
-            let framebuffers: Vec<vk::Framebuffer> = swapchain_images
-                .iter()
-                .map(|tex| tex.view)
-                .map(|img_view| {
-                    let attachments = &[img_view];
-                    let framebuffer_info = vk::FramebufferCreateInfo::builder()
-                        .render_pass(renderpass)
-                        .attachments(attachments)
-                        .width(width)
-                        .height(height)
-                        .layers(1);
-                    let framebuffer = unsafe { device.create_framebuffer(&framebuffer_info, None) };
-                    framebuffer
-                })
-                .collect::<ash::prelude::VkResult<Vec<vk::Framebuffer>>>()?;
+            let framebuffers: Vec<vk::Framebuffer> = Self::create_swapchain_framebuffers(
+                &device,
+                &swapchain_images,
+                renderpass,
+                width,
+                height,
+            )?;
 
             let render_fence = device.create_fence(
                 &vk::FenceCreateInfo::builder().flags(vk::FenceCreateFlags::SIGNALED),
@@ -303,12 +294,12 @@ impl Cx {
         self.framebuffers
             .iter()
             .for_each(|&fb| self.device.destroy_framebuffer(fb, None));
+        // Swapchain image handles are not meant to be destroyed so we only destroy their view
         self.swapchain_images
             .iter()
             .for_each(|img| self.device.destroy_image_view(img.view, None));
 
         let SwapchainData { swapchain, images } = Self::create_swapchain(
-            &self.instance,
             &self.device,
             self.surface_format,
             &self.surface_loader,
@@ -322,23 +313,13 @@ impl Cx {
         self.swapchain = swapchain;
         self.swapchain_images = images;
 
-        self.framebuffers = self
-            .swapchain_images
-            .iter()
-            .map(|tex| tex.view)
-            .map(|img_view| {
-                let attachments = &[img_view];
-                let framebuffer_info = vk::FramebufferCreateInfo::builder()
-                    .render_pass(self.renderpass)
-                    .attachments(attachments)
-                    .width(width)
-                    .height(height)
-                    .layers(1);
-                let framebuffer =
-                    unsafe { self.device.create_framebuffer(&framebuffer_info, None) };
-                framebuffer
-            })
-            .collect::<ash::prelude::VkResult<Vec<vk::Framebuffer>>>()?;
+        self.framebuffers = Self::create_swapchain_framebuffers(
+            &self.device,
+            &self.swapchain_images,
+            self.renderpass,
+            width,
+            height,
+        )?;
 
         self.width = width;
         self.height = height;
@@ -347,7 +328,6 @@ impl Cx {
     }
 
     unsafe fn create_swapchain(
-        instance: &ash::Instance,
         device: &ash::Device,
         surface_format: vk::SurfaceFormatKHR,
         surface_loader: &ash::extensions::khr::Surface,
@@ -442,16 +422,42 @@ impl Cx {
             images: swapchain_images,
         })
     }
+
+    unsafe fn create_swapchain_framebuffers(
+        device: &ash::Device,
+        swapchain_images: &[Texture],
+        renderpass: vk::RenderPass,
+        width: u32,
+        height: u32,
+    ) -> ash::prelude::VkResult<Vec<vk::Framebuffer>> {
+        swapchain_images
+            .iter()
+            .map(|tex| tex.view)
+            .map(|img_view| {
+                let attachments = &[img_view];
+                let framebuffer_info = vk::FramebufferCreateInfo::builder()
+                    .render_pass(renderpass)
+                    .attachments(attachments)
+                    .width(width)
+                    .height(height)
+                    .layers(1);
+                let framebuffer = device.create_framebuffer(&framebuffer_info, None);
+                framebuffer
+            })
+            .collect()
+    }
 }
 
 impl Drop for Cx {
     fn drop(&mut self) {
         unsafe {
-            self.device.wait_for_fences(
-                &[self.render_fence],
-                true,
-                Duration::from_secs(1).as_nanos() as u64,
-            );
+            self.device
+                .wait_for_fences(
+                    &[self.render_fence],
+                    true,
+                    Duration::from_secs(10).as_nanos() as u64,
+                )
+                .unwrap();
             self.device.destroy_fence(self.render_fence, None);
             self.device.destroy_semaphore(self.render_semaphore, None);
             self.device.destroy_semaphore(self.present_semaphore, None);
