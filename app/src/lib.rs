@@ -74,6 +74,13 @@ impl App {
                 ash::vk::SubpassContents::INLINE,
             );
 
+            self.cx.device.cmd_bind_pipeline(
+                self.cx.render_cmds,
+                ash::vk::PipelineBindPoint::GRAPHICS,
+                self.cx.pipeline,
+            );
+            self.cx.device.cmd_draw(self.cx.render_cmds, 3, 1, 0, 0);
+
             self.cx.device.cmd_end_render_pass(self.cx.render_cmds);
             self.cx.device.end_command_buffer(self.cx.render_cmds)?;
 

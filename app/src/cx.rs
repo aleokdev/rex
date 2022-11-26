@@ -10,6 +10,7 @@ use ash::{
     },
     vk,
 };
+use cstr::cstr;
 use raw_window_handle::{HasRawDisplayHandle, HasRawWindowHandle};
 use std::{
     borrow::Cow,
@@ -45,6 +46,12 @@ pub struct Cx {
     pub render_queue: (vk::Queue, u32),
     pub command_pool: vk::CommandPool,
     pub render_cmds: vk::CommandBuffer,
+
+    pub vtx_shader: vk::ShaderModule,
+    pub frag_shader: vk::ShaderModule,
+
+    pub pipeline: vk::Pipeline,
+    pub pipeline_layout: vk::PipelineLayout,
 
     pub renderpass: vk::RenderPass,
     pub framebuffers: Vec<vk::Framebuffer>,
@@ -254,6 +261,91 @@ impl Cx {
                     .command_pool(command_pool),
             )?[0];
 
+            let vtx_code = include_bytes!("../res/tri.vert.spv")
+                .chunks(4)
+                .map(|bytes| u32::from_le_bytes(bytes.try_into().unwrap()))
+                .collect::<Vec<_>>();
+            let vtx_shader = device.create_shader_module(
+                &vk::ShaderModuleCreateInfo::builder().code(&vtx_code),
+                None,
+            )?;
+
+            let frag_code = include_bytes!("../res/tri.frag.spv")
+                .chunks(4)
+                .map(|bytes| u32::from_le_bytes(bytes.try_into().unwrap()))
+                .collect::<Vec<_>>();
+            let frag_shader = device.create_shader_module(
+                &vk::ShaderModuleCreateInfo::builder().code(&frag_code),
+                None,
+            )?;
+
+            let pipeline_layout =
+                device.create_pipeline_layout(&vk::PipelineLayoutCreateInfo::default(), None)?;
+
+            const ENTRY_POINT: &CStr = cstr!("main");
+            let stages = &[
+                vk::PipelineShaderStageCreateInfo::builder()
+                    .stage(vk::ShaderStageFlags::VERTEX)
+                    .module(vtx_shader)
+                    .name(ENTRY_POINT)
+                    .build(),
+                vk::PipelineShaderStageCreateInfo::builder()
+                    .stage(vk::ShaderStageFlags::FRAGMENT)
+                    .module(frag_shader)
+                    .name(ENTRY_POINT)
+                    .build(),
+            ];
+            let input_assembly_state = vk::PipelineInputAssemblyStateCreateInfo::builder()
+                .topology(vk::PrimitiveTopology::TRIANGLE_LIST)
+                .primitive_restart_enable(false);
+            let rasterization_state = vk::PipelineRasterizationStateCreateInfo::builder()
+                .cull_mode(vk::CullModeFlags::NONE)
+                .depth_bias_clamp(0.)
+                .depth_bias_constant_factor(0.)
+                .depth_bias_slope_factor(0.)
+                .depth_bias_enable(false)
+                .line_width(1.)
+                .front_face(vk::FrontFace::CLOCKWISE)
+                .polygon_mode(vk::PolygonMode::FILL);
+            let msaa = vk::PipelineMultisampleStateCreateInfo::builder()
+                .sample_shading_enable(false)
+                .alpha_to_coverage_enable(false)
+                .alpha_to_one_enable(false)
+                .min_sample_shading(1.)
+                .rasterization_samples(vk::SampleCountFlags::TYPE_1);
+            let color_blend_attachments = &[*vk::PipelineColorBlendAttachmentState::builder()
+                .color_write_mask(vk::ColorComponentFlags::RGBA)
+                .blend_enable(false)];
+            let color_blend_state = vk::PipelineColorBlendStateCreateInfo::builder()
+                .logic_op_enable(false)
+                .logic_op(vk::LogicOp::COPY)
+                .attachments(color_blend_attachments);
+            let viewports = &[*vk::Viewport::builder()
+                .width(width as f32)
+                .height(height as f32)
+                .min_depth(0.)
+                .max_depth(1.)];
+            let scissors = &[*vk::Rect2D::builder().extent(vk::Extent2D { width, height })];
+            let viewport_state = vk::PipelineViewportStateCreateInfo::builder()
+                .viewports(viewports)
+                .scissors(scissors);
+            let vertex_input_state = vk::PipelineVertexInputStateCreateInfo::default();
+            let pipeline_info = vk::GraphicsPipelineCreateInfo::builder()
+                .stages(stages)
+                .input_assembly_state(&input_assembly_state)
+                .rasterization_state(&rasterization_state)
+                .multisample_state(&msaa)
+                .render_pass(renderpass)
+                .subpass(0)
+                .layout(pipeline_layout)
+                .color_blend_state(&color_blend_state)
+                .viewport_state(&viewport_state)
+                .vertex_input_state(&vertex_input_state);
+
+            let pipeline = device
+                .create_graphics_pipelines(vk::PipelineCache::null(), &[*pipeline_info], None)
+                .map_err(|(_, e)| e)?[0];
+
             Ok(Cx {
                 window,
                 width,
@@ -277,6 +369,12 @@ impl Cx {
 
                 renderpass,
                 framebuffers,
+
+                vtx_shader,
+                frag_shader,
+
+                pipeline,
+                pipeline_layout,
 
                 memory,
                 frame: 0,
@@ -461,6 +559,12 @@ impl Drop for Cx {
             self.device.destroy_fence(self.render_fence, None);
             self.device.destroy_semaphore(self.render_semaphore, None);
             self.device.destroy_semaphore(self.present_semaphore, None);
+
+            self.device
+                .destroy_pipeline_layout(self.pipeline_layout, None);
+            self.device.destroy_pipeline(self.pipeline, None);
+            self.device.destroy_shader_module(self.vtx_shader, None);
+            self.device.destroy_shader_module(self.frag_shader, None);
 
             self.device.destroy_command_pool(self.command_pool, None);
 
