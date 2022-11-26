@@ -51,9 +51,9 @@ pub struct Cx {
 
     pub renderpass: vk::RenderPass,
     pub framebuffers: Vec<vk::Framebuffer>,
-    pub present_semaphore: vk::Semaphore,
+    pub acquire_semaphore: vk::Semaphore,
     pub render_semaphore: vk::Semaphore,
-    pub render_fence: vk::Fence,
+    pub render_queue_fence: vk::Fence,
 }
 
 pub struct SwapchainData {
@@ -376,8 +376,8 @@ impl Cx {
                 memory,
                 frame: 0,
 
-                render_fence,
-                present_semaphore,
+                render_queue_fence: render_fence,
+                acquire_semaphore: present_semaphore,
                 render_semaphore,
             })
         }
@@ -551,14 +551,14 @@ impl Drop for Cx {
         unsafe {
             self.device
                 .wait_for_fences(
-                    &[self.render_fence],
+                    &[self.render_queue_fence],
                     true,
                     Duration::from_secs(10).as_nanos() as u64,
                 )
                 .unwrap();
-            self.device.destroy_fence(self.render_fence, None);
+            self.device.destroy_fence(self.render_queue_fence, None);
             self.device.destroy_semaphore(self.render_semaphore, None);
-            self.device.destroy_semaphore(self.present_semaphore, None);
+            self.device.destroy_semaphore(self.acquire_semaphore, None);
 
             self.device
                 .destroy_pipeline_layout(self.pipeline_layout, None);

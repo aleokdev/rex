@@ -26,19 +26,54 @@ impl App {
 
     fn redraw(&mut self) -> anyhow::Result<()> {
         unsafe {
+            // - Wait for the render queue fence:
+            //      We don't want to submit to the queue while it is busy!
+            // - Reset it:
+            //      Now that we've finished waiting, the queue is free again, we can reset the
+            //      fence.
+            // - Obtain the next image we should be drawing onto:
+            //      Since we're using a swapchain, the driver should tell us which image of the
+            //      swapchain we should be drawing onto; We can't draw directly onto the window.
+            // - Reset the command buffer:
+            //      We used it last frame (unless this is the first frame, in which case it is
+            //      already reset), now that the queue submit is finished we can safely reset it.
+            // - Record commands to the buffer:
+            //      We now are ready to tell the GPU what to do.
+            //      - Begin a render pass:
+            //          We clear the whole frame with black.
+            //      - Bind our pipeline:
+            //          We tell the GPU to configure itself for what's coming...
+            //      - Draw:
+            //          We draw our mesh having set the pipeline first.
+            //      - End the render pass
+            // - Submit the command buffer to the queue:
+            //      We set it to take place after the image acquisition has been finalized.
+            //      This operation will take a while, so we set it to open our render queue fence
+            //      once it is complete.
+            // - Present the frame drawn:
+            //      We adjust this operation to take place after the submission has finished.
+            //
+            // And thus, our timeline will look something like this:
+            // [        CPU        ][        GPU        ]
+            // [ Setup GPU work    -> Wait for work     ]
+            // [ Wait for fence    ][ Acquire image #1  ]
+            // [ Wait for fence    ][ Execute commands  ]
+            // [ Wait for fence    <- Signal fence      ]
+            // [ Setup GPU work    -> Present image #1  ]
+            // [ Wait for fence    ][ Acquire image #2  ]
             self.cx.device.wait_for_fences(
-                &[self.cx.render_fence],
+                &[self.cx.render_queue_fence],
                 true,
                 Duration::from_secs(1).as_nanos() as u64,
             )?;
 
-            self.cx.device.reset_fences(&[self.cx.render_fence])?;
+            self.cx.device.reset_fences(&[self.cx.render_queue_fence])?;
 
             let (swapchain_img_index, _is_suboptimal) =
                 self.cx.swapchain_loader.acquire_next_image(
                     self.cx.swapchain,
                     Duration::from_secs(1).as_nanos() as u64,
-                    self.cx.present_semaphore,
+                    self.cx.acquire_semaphore,
                     ash::vk::Fence::null(),
                 )?;
 
@@ -85,19 +120,21 @@ impl App {
             self.cx.device.end_command_buffer(self.cx.render_cmds)?;
 
             let wait_stage = &[ash::vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT];
-            let wait_semaphores = &[self.cx.present_semaphore];
+            let wait_semaphores = &[self.cx.acquire_semaphore];
             let signal_semaphores = &[self.cx.render_semaphore];
             let cmd_buffers = &[self.cx.render_cmds];
             let submit = ash::vk::SubmitInfo::builder()
                 .wait_dst_stage_mask(wait_stage)
-                .signal_semaphores(signal_semaphores)
                 .wait_semaphores(wait_semaphores)
+                .signal_semaphores(signal_semaphores)
                 .command_buffers(cmd_buffers)
                 .build();
 
-            self.cx
-                .device
-                .queue_submit(self.cx.render_queue.0, &[submit], self.cx.render_fence)?;
+            self.cx.device.queue_submit(
+                self.cx.render_queue.0,
+                &[submit],
+                self.cx.render_queue_fence,
+            )?;
 
             self.cx.swapchain_loader.queue_present(
                 self.cx.render_queue.0,
@@ -125,7 +162,7 @@ pub fn run(width: u32, height: u32) -> anyhow::Result<()> {
             Event::WindowEvent { event, .. } => match event {
                 WindowEvent::Resized(new_size) => unsafe {
                     app.cx.device.wait_for_fences(
-                        &[app.cx.render_fence],
+                        &[app.cx.render_queue_fence],
                         true,
                         Duration::from_secs(1).as_nanos() as u64,
                     );
