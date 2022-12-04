@@ -1,4 +1,4 @@
-use crate::memory::GpuAllocation;
+use super::memory::GpuAllocation;
 use ash::vk;
 
 pub struct Buffer {

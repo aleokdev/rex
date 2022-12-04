@@ -1,4 +1,4 @@
-use crate::{buddy::BuddyAllocator, buffer::Buffer, image::Image};
+use super::{buddy::BuddyAllocator, buffer::Buffer, image::Image};
 use ash::vk;
 use std::collections::HashMap;
 use thiserror::Error;

@@ -1,4 +1,4 @@
-use crate::{
+use super::{
     image::{Image, Texture},
     memory::GpuMemory,
     util::subresource_range,
@@ -265,7 +265,7 @@ impl Cx {
                     .command_pool(command_pool),
             )?[0];
 
-            let vtx_code = include_bytes!("../res/tri.vert.spv")
+            let vtx_code = include_bytes!("../../res/tri.vert.spv")
                 .chunks(4)
                 .map(|bytes| u32::from_le_bytes(bytes.try_into().unwrap()))
                 .collect::<Vec<_>>();
@@ -274,7 +274,7 @@ impl Cx {
                 None,
             )?;
 
-            let frag_code = include_bytes!("../res/tri.frag.spv")
+            let frag_code = include_bytes!("../../res/tri.frag.spv")
                 .chunks(4)
                 .map(|bytes| u32::from_le_bytes(bytes.try_into().unwrap()))
                 .collect::<Vec<_>>();

@@ -1,9 +1,4 @@
-mod buddy;
-mod buffer;
-mod cx;
-mod image;
-mod memory;
-mod util;
+mod renderer;
 
 use std::time::Duration;
 
@@ -12,7 +7,7 @@ use winit::{
     event_loop::{ControlFlow, EventLoop},
 };
 
-use crate::cx::Cx;
+use crate::renderer::Cx;
 
 struct App {
     pub cx: Cx,
