@@ -19,6 +19,11 @@ use winit::{
     window::{Window, WindowBuilder},
 };
 
+pub struct CxTask {
+    frame_to_execute_on: u64,
+    callback: Box<dyn for<'a> FnOnce(&'a mut Cx)>,
+}
+
 pub struct Cx {
     pub window: Window,
     pub width: u32,
@@ -54,6 +59,8 @@ pub struct Cx {
     pub acquire_semaphore: vk::Semaphore,
     pub render_semaphore: vk::Semaphore,
     pub render_queue_fence: vk::Fence,
+
+    pub task_queue: Vec<CxTask>,
 }
 
 pub struct SwapchainData {
@@ -379,6 +386,8 @@ impl Cx {
                 render_queue_fence: render_fence,
                 acquire_semaphore: present_semaphore,
                 render_semaphore,
+
+                task_queue: vec![],
             })
         }
     }
@@ -387,10 +396,6 @@ impl Cx {
         self.framebuffers
             .iter()
             .for_each(|&fb| self.device.destroy_framebuffer(fb, None));
-        // Swapchain image handles are not meant to be destroyed so we only destroy their view
-        self.swapchain_images
-            .iter()
-            .for_each(|img| self.device.destroy_image_view(img.view, None));
 
         let SwapchainData { swapchain, images } = Self::create_swapchain(
             &self.device,
@@ -403,11 +408,21 @@ impl Cx {
             height,
             self.swapchain,
         )?;
-        self.swapchain_loader
-            .destroy_swapchain(self.swapchain, None);
 
-        self.swapchain = swapchain;
-        self.swapchain_images = images;
+        let old_swapchain = std::mem::replace(&mut self.swapchain, swapchain);
+        let old_swapchain_images = std::mem::replace(&mut self.swapchain_images, images);
+
+        // We avoid destroying the current swapchain right now as it is currently being used
+        self.task_queue.push(CxTask {
+            frame_to_execute_on: self.frame + self.swapchain_images.len() as u64,
+            callback: Box::new(move |cx| {
+                // Swapchain image handles are not meant to be destroyed so we only destroy their view
+                old_swapchain_images
+                    .iter()
+                    .for_each(|img| cx.device.destroy_image_view(img.view, None));
+                cx.swapchain_loader.destroy_swapchain(old_swapchain, None);
+            }),
+        });
 
         self.framebuffers = Self::create_swapchain_framebuffers(
             &self.device,
@@ -543,6 +558,141 @@ impl Cx {
                 framebuffer
             })
             .collect()
+    }
+
+    pub unsafe fn draw(&mut self) -> anyhow::Result<()> {
+        // - Wait for the render queue fence:
+        //      We don't want to submit to the queue while it is busy!
+        // - Reset it:
+        //      Now that we've finished waiting, the queue is free again, we can reset the
+        //      fence.
+        // - Obtain the next image we should be drawing onto:
+        //      Since we're using a swapchain, the driver should tell us which image of the
+        //      swapchain we should be drawing onto; We can't draw directly onto the window.
+        // - Reset the command buffer:
+        //      We used it last frame (unless this is the first frame, in which case it is
+        //      already reset), now that the queue submit is finished we can safely reset it.
+        // - Record commands to the buffer:
+        //      We now are ready to tell the GPU what to do.
+        //      - Begin a render pass:
+        //          We clear the whole frame with black.
+        //      - Bind our pipeline:
+        //          We tell the GPU to configure itself for what's coming...
+        //      - Draw:
+        //          We draw our mesh having set the pipeline first.
+        //      - End the render pass
+        // - Submit the command buffer to the queue:
+        //      We set it to take place after the image acquisition has been finalized.
+        //      This operation will take a while, so we set it to open our render queue fence
+        //      once it is complete.
+        // - Present the frame drawn:
+        //      We adjust this operation to take place after the submission has finished.
+        //
+        // And thus, our timeline will look something like this:
+        // [        CPU        ][        GPU        ]
+        // [ Setup GPU work    -> Wait for work     ]
+        // [ Wait for fence    ][ Acquire image #1  ] Note: The image acquisition may stall!
+        // [ Wait for fence    ][ Execute commands  ] After all the images in the swapchain
+        // [ Wait for fence    <- Signal fence      ] have been written the GPU will need to
+        // [ Setup GPU work    -> Present image #1  ] wait for the next refresh cycle for a
+        // [ Wait for fence    ][ Acquire image #2  ] new image to be available.
+        self.device.wait_for_fences(
+            &[self.render_queue_fence],
+            true,
+            Duration::from_secs(1).as_nanos() as u64,
+        )?;
+
+        self.device.reset_fences(&[self.render_queue_fence])?;
+
+        let (swapchain_img_index, _is_suboptimal) = self.swapchain_loader.acquire_next_image(
+            self.swapchain,
+            Duration::from_secs(1).as_nanos() as u64,
+            self.acquire_semaphore,
+            ash::vk::Fence::null(),
+        )?;
+
+        self.device
+            .reset_command_buffer(self.render_cmds, ash::vk::CommandBufferResetFlags::empty())?;
+
+        self.device.begin_command_buffer(
+            self.render_cmds,
+            &ash::vk::CommandBufferBeginInfo::builder()
+                .flags(ash::vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT),
+        )?;
+
+        self.device.cmd_begin_render_pass(
+            self.render_cmds,
+            &ash::vk::RenderPassBeginInfo::builder()
+                .clear_values(&[ash::vk::ClearValue {
+                    color: ash::vk::ClearColorValue {
+                        float32: [0., 0., 0., 1.],
+                    },
+                }])
+                .render_area(
+                    ash::vk::Rect2D::builder()
+                        .extent(ash::vk::Extent2D {
+                            width: self.width,
+                            height: self.height,
+                        })
+                        .build(),
+                )
+                .render_pass(self.renderpass)
+                .framebuffer(self.framebuffers[swapchain_img_index as usize]),
+            ash::vk::SubpassContents::INLINE,
+        );
+
+        self.device.cmd_bind_pipeline(
+            self.render_cmds,
+            ash::vk::PipelineBindPoint::GRAPHICS,
+            self.pipeline,
+        );
+        self.device.cmd_draw(self.render_cmds, 3, 1, 0, 0);
+
+        self.device.cmd_end_render_pass(self.render_cmds);
+        self.device.end_command_buffer(self.render_cmds)?;
+
+        let wait_stage = &[ash::vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT];
+        let wait_semaphores = &[self.acquire_semaphore];
+        let signal_semaphores = &[self.render_semaphore];
+        let cmd_buffers = &[self.render_cmds];
+        let submit = ash::vk::SubmitInfo::builder()
+            .wait_dst_stage_mask(wait_stage)
+            .wait_semaphores(wait_semaphores)
+            .signal_semaphores(signal_semaphores)
+            .command_buffers(cmd_buffers)
+            .build();
+
+        self.device
+            .queue_submit(self.render_queue.0, &[submit], self.render_queue_fence)?;
+
+        self.swapchain_loader.queue_present(
+            self.render_queue.0,
+            &ash::vk::PresentInfoKHR::builder()
+                .swapchains(&[self.swapchain])
+                .wait_semaphores(&[self.render_semaphore])
+                .image_indices(&[swapchain_img_index]),
+        )?;
+
+        self.advance_frame_count();
+
+        Ok(())
+    }
+
+    fn advance_frame_count(&mut self) {
+        let tasks = self.task_queue.drain(..).collect::<Vec<_>>();
+        self.task_queue = tasks
+            .into_iter()
+            .filter_map(|item| {
+                if item.frame_to_execute_on == self.frame {
+                    log::info!("Executing task scheduled to run at frame {}", self.frame);
+                    (item.callback)(self);
+                    None
+                } else {
+                    Some(item)
+                }
+            })
+            .collect();
+        self.frame += 1;
     }
 }
 
