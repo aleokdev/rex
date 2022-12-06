@@ -1,6 +1,9 @@
 use ash::vk;
 
-use super::{cx::Cx, memory::GpuAllocation};
+use super::{
+    cx::Cx,
+    memory::{GpuAllocation, GpuMemory},
+};
 
 #[derive(Debug)]
 pub struct Image {
@@ -10,9 +13,9 @@ pub struct Image {
 }
 
 impl Image {
-    pub unsafe fn destroy(self, cx: &mut Cx) -> anyhow::Result<()> {
+    pub unsafe fn destroy(self, cx: &mut Cx, memory: &mut GpuMemory) -> anyhow::Result<()> {
         if let Some(allocation) = self.allocation {
-            cx.memory.free_image(allocation)?;
+            memory.free_image(allocation)?;
         }
         cx.device.destroy_image(self.raw, None);
         Ok(())
@@ -26,9 +29,9 @@ pub struct Texture {
 }
 
 impl Texture {
-    pub unsafe fn destroy(self, cx: &mut Cx) -> anyhow::Result<()> {
+    pub unsafe fn destroy(self, cx: &mut Cx, memory: &mut GpuMemory) -> anyhow::Result<()> {
         cx.device.destroy_image_view(self.view, None);
-        self.image.destroy(cx)?;
+        self.image.destroy(cx, memory)?;
         Ok(())
     }
 }

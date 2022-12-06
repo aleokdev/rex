@@ -2,7 +2,7 @@ use super::{
     buffer::{Buffer, BufferSlice},
     cx,
     memory::{GpuMemory, MemoryUsage},
-    Arenas, Cx,
+    Cx,
 };
 use ash::vk;
 
@@ -25,28 +25,15 @@ pub struct GpuMesh {
 }
 
 impl GpuMesh {
-    pub unsafe fn allocate_from_arenas(
-        cx: &mut Cx,
-        vertices: u64,
-        indices: u64,
-    ) -> anyhow::Result<Self> {
-        Ok(GpuMesh {
-            vertices: cx.arenas.vertex.suballocate(
-                &mut cx.memory,
-                vertices * std::mem::size_of::<Vertex>() as u64,
-            )?,
-            indices: cx.arenas.index.suballocate(&mut cx.memory, indices * 4)?,
-        })
-    }
-
     pub unsafe fn upload(
         &mut self,
         cx: &mut Cx,
         cmd: vk::CommandBuffer,
         vertices: &[GpuVertex],
         indices: &[u32],
+        scratch_memory: &mut GpuMemory,
     ) -> anyhow::Result<()> {
-        let vertex_staging = cx.memory.allocate_scratch_buffer(
+        let vertex_staging = scratch_memory.allocate_scratch_buffer(
             vk::BufferCreateInfo::builder()
                 .size(vertices.len() as u64 * std::mem::size_of::<GpuVertex>() as u64)
                 .usage(vk::BufferUsageFlags::TRANSFER_SRC)
@@ -61,7 +48,7 @@ impl GpuMesh {
         )
         .copy_from_slice(vertices);
 
-        let index_staging = cx.memory.allocate_scratch_buffer(
+        let index_staging = scratch_memory.allocate_scratch_buffer(
             vk::BufferCreateInfo::builder()
                 .size(indices.len() as u64 * 4)
                 .usage(vk::BufferUsageFlags::TRANSFER_SRC)

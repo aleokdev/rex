@@ -1,6 +1,6 @@
 mod renderer;
 
-use crate::renderer::Cx;
+use renderer::{abs, render};
 use std::time::Duration;
 use winit::{
     event::{Event, WindowEvent},
@@ -8,35 +8,33 @@ use winit::{
 };
 
 struct App {
-    pub cx: Cx,
+    pub cx: abs::Cx,
+    pub renderer: render::Renderer,
 }
 
 impl App {
-    fn new(event_loop: &EventLoop<()>, width: u32, height: u32) -> anyhow::Result<Self> {
-        let cx = Cx::new(event_loop, width, height)?;
-        Ok(App { cx })
+    unsafe fn new(event_loop: &EventLoop<()>, width: u32, height: u32) -> anyhow::Result<Self> {
+        let mut cx = abs::Cx::new(event_loop, width, height)?;
+        let renderer = render::Renderer::new(&mut cx)?;
+        Ok(App { cx, renderer })
     }
 
-    fn redraw(&mut self) -> anyhow::Result<()> {
-        unsafe { self.cx.draw() }
+    unsafe fn redraw(&mut self) -> anyhow::Result<()> {
+        self.renderer.draw(&mut self.cx)
     }
 }
 
 pub fn run(width: u32, height: u32) -> anyhow::Result<()> {
     let event_loop = EventLoop::new();
-    let mut app = App::new(&event_loop, width, height)?;
+    let mut app = unsafe { App::new(&event_loop, width, height)? };
 
     event_loop.run(move |event, _target, control_flow| {
         *control_flow = ControlFlow::Poll;
 
         match event {
             Event::WindowEvent { event, .. } => match event {
-                WindowEvent::Resized(new_size) => unsafe {
-                    app.cx.device.wait_for_fences(
-                        &[app.cx.render_queue_fence],
-                        true,
-                        Duration::from_secs(1).as_nanos() as u64,
-                    );
+                WindowEvent::Resized(new_size) if false => unsafe {
+                    app.cx.device.device_wait_idle().unwrap();
                     app.cx
                         .recreate_swapchain(new_size.width, new_size.height)
                         .unwrap();
@@ -47,9 +45,12 @@ pub fn run(width: u32, height: u32) -> anyhow::Result<()> {
                 _ => {}
             },
             Event::MainEventsCleared => app.cx.window.request_redraw(),
-            Event::RedrawRequested(_) => {
+            Event::RedrawRequested(_) => unsafe {
                 app.redraw().unwrap();
-            }
+            },
+            Event::LoopDestroyed => unsafe {
+                app.renderer.destroy(&mut app.cx).unwrap();
+            },
             _ => {}
         }
     })

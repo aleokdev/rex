@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use crate::renderer::memory::OutOfMemory;
+use super::memory::OutOfMemory;
 
 use super::{
     buddy::BuddyAllocator,
@@ -17,8 +17,8 @@ pub struct Buffer {
 }
 
 impl Buffer {
-    pub unsafe fn destroy(self, cx: &mut Cx) -> anyhow::Result<()> {
-        cx.memory.free_buffer(self.allocation)?;
+    pub unsafe fn destroy(self, cx: &mut Cx, memory: &mut GpuMemory) -> anyhow::Result<()> {
+        memory.free_buffer(self.allocation)?;
         cx.device.destroy_buffer(self.raw, None);
         Ok(())
     }
