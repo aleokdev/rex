@@ -198,6 +198,8 @@ impl Cx {
     }
 
     pub unsafe fn recreate_swapchain(&mut self, width: u32, height: u32) -> anyhow::Result<()> {
+        self.free_swapchain_views();
+
         let surface_caps = self
             .surface_loader
             .get_physical_device_surface_capabilities(self.physical_device, self.surface)?;
@@ -298,20 +300,28 @@ impl Cx {
         let swapchain = swapchain_loader.create_swapchain(info, None)?;
         Ok((swapchain_loader, swapchain))
     }
+
+    unsafe fn free_swapchain_views(&self) {
+        for texture in &self.swapchain_images {
+            self.device.destroy_image_view(texture.view, None);
+        }
+    }
 }
 
 impl Drop for Cx {
     fn drop(&mut self) {
         unsafe {
+            self.free_swapchain_views();
+
             if let Some(swapchain_loader) = &self.swapchain_loader {
                 swapchain_loader.destroy_swapchain(self.swapchain, None);
-
-                self.device.destroy_device(None);
-                self.surface_loader.destroy_surface(self.surface, None);
-                self.debug_utils_loader
-                    .destroy_debug_utils_messenger(self.debug_callback, None);
-                self.instance.destroy_instance(None);
             }
+
+            self.device.destroy_device(None);
+            self.surface_loader.destroy_surface(self.surface, None);
+            self.debug_utils_loader
+                .destroy_debug_utils_messenger(self.debug_callback, None);
+            self.instance.destroy_instance(None);
         }
     }
 }

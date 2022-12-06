@@ -5,12 +5,11 @@ mod image;
 mod memory;
 mod util;
 
+use crate::cx::Cx;
 use winit::{
     event::{Event, WindowEvent},
     event_loop::{ControlFlow, EventLoop},
 };
-
-use crate::cx::Cx;
 
 struct App {
     pub cx: Cx,

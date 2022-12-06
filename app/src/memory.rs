@@ -109,11 +109,11 @@ impl MemoryType {
         device: &ash::Device,
         size: u64,
         alignment: u64,
-    ) -> anyhow::Result<(vk::DeviceMemory, u64, u64)> {
-        for block in &mut self.memory_blocks {
+    ) -> anyhow::Result<(vk::DeviceMemory, u64, u64, usize)> {
+        for (i, block) in self.memory_blocks.iter_mut().enumerate() {
             match block.allocator.allocate(self.block_size, size, alignment) {
                 Ok((offset, size)) => {
-                    return Ok((block.raw, offset, size));
+                    return Ok((block.raw, offset, size, i));
                 }
                 Err(e) if !e.is::<OutOfMemory>() => {
                     return Err(e);
@@ -133,6 +133,8 @@ pub struct GpuMemory {
     linear_linear: HashMap<u32, MemoryType>,
     list_linear: HashMap<u32, MemoryType>,
     images: HashMap<u32, MemoryType>,
+
+    scratch: Vec<vk::Buffer>,
 }
 
 impl GpuMemory {
@@ -150,6 +152,8 @@ impl GpuMemory {
             linear_linear: HashMap::new(),
             list_linear: HashMap::new(),
             images: HashMap::new(),
+
+            scratch: vec![],
         })
     }
 
@@ -173,6 +177,8 @@ impl GpuMemory {
         self.device
             .bind_buffer_memory(buffer, allocation.memory, allocation.offset)?;
 
+        self.scratch.push(buffer);
+
         Ok(Buffer {
             raw: buffer,
             allocation,
@@ -185,6 +191,11 @@ impl GpuMemory {
                 block.allocator.free(None)?;
             }
         }
+
+        for buffer in self.scratch.drain(..) {
+            self.device.destroy_buffer(buffer, None);
+        }
+
         Ok(())
     }
 
@@ -230,14 +241,124 @@ impl GpuMemory {
                 default_allocator: Allocator::Linear { cursor: 0 },
             });
 
-        let (memory, offset, size) =
+        let (memory, offset, size, memory_block_index) =
             memory_type.allocate(&self.device, requirements.size, requirements.alignment)?;
+
+        if mapped {
+            self.device
+                .map_memory(memory, offset, size, vk::MemoryMapFlags::default())?;
+        }
 
         Ok(GpuAllocation {
             memory,
             offset,
             size,
             memory_type_index,
+            memory_block_index,
+            allocator: AllocatorType::Linear,
+        })
+    }
+
+    pub unsafe fn allocate_buffer(
+        &mut self,
+        info: &vk::BufferCreateInfo,
+        usage: MemoryUsage,
+        mapped: bool,
+    ) -> anyhow::Result<Buffer> {
+        let buffer = self.device.create_buffer(info, None)?;
+        let requirements = self.device.get_buffer_memory_requirements(buffer);
+
+        let allocation = match self.allocate_list(usage, &requirements, mapped) {
+            Ok(x) => x,
+            Err(e) => {
+                self.device.destroy_buffer(buffer, None);
+                return Err(e);
+            }
+        };
+
+        self.device
+            .bind_buffer_memory(buffer, allocation.memory, allocation.offset)?;
+
+        Ok(Buffer {
+            raw: buffer,
+            allocation,
+        })
+    }
+
+    pub unsafe fn free_buffer(&mut self, allocation: GpuAllocation) -> anyhow::Result<()> {
+        assert_eq!(allocation.allocator, AllocatorType::List);
+        self.list_linear
+            .get_mut(&allocation.memory_type_index)
+            .ok_or_else(|| anyhow::anyhow!("mismatched allocation memory type"))?
+            .memory_blocks
+            .get_mut(allocation.memory_block_index)
+            .ok_or_else(|| anyhow::anyhow!("out of range memory block index"))?
+            .allocator
+            .free(Some(&allocation))
+    }
+
+    unsafe fn allocate_list(
+        &mut self,
+        usage: MemoryUsage,
+        requirements: &vk::MemoryRequirements,
+        mapped: bool,
+    ) -> anyhow::Result<GpuAllocation> {
+        let (memory_type_index, memory_props) = find_properties(
+            &self.memory_props,
+            requirements.memory_type_bits,
+            usage.flags(false),
+        )
+        .or_else(|| {
+            find_properties(
+                &self.memory_props,
+                requirements.memory_type_bits,
+                usage.flags(true),
+            )
+        })
+        .ok_or_else(|| anyhow::anyhow!("no compatible memory on GPU"))?;
+
+        if mapped && !memory_props.contains(vk::MemoryPropertyFlags::HOST_VISIBLE) {
+            return Err(anyhow::anyhow!(
+                "tried to create mappable memory with non-mappable memory properties"
+            ));
+        }
+
+        let block_size = if memory_props.contains(vk::MemoryPropertyFlags::DEVICE_LOCAL) {
+            DEVICE_BLOCK_SIZE
+        } else {
+            HOST_BLOCK_SIZE
+        };
+
+        let memory_type = self
+            .list_linear
+            .entry(memory_type_index)
+            .or_insert_with(|| MemoryType {
+                memory_blocks: vec![],
+                memory_props,
+                memory_type_index,
+                block_size,
+                mappable: memory_props.contains(vk::MemoryPropertyFlags::HOST_VISIBLE),
+                default_allocator: Allocator::Buddy(BuddyAllocator::new(
+                    level_count(block_size),
+                    BASE_ORDER,
+                )),
+            });
+
+        let (memory, offset, size, memory_block_index) =
+            memory_type.allocate(&self.device, requirements.size, requirements.alignment)?;
+
+        if mapped {
+            self.device
+                .map_memory(memory, offset, size, vk::MemoryMapFlags::default())?;
+        }
+
+        Ok(GpuAllocation {
+            memory,
+            offset,
+            size,
+            memory_type_index,
+            memory_block_index,
+            allocator: AllocatorType::List,
         })
     }
 
@@ -267,7 +388,7 @@ impl GpuMemory {
                 )),
             });
 
-        let (memory, offset, size) =
+        let (memory, offset, size, memory_block_index) =
             memory_type.allocate(&self.device, requirements.size, requirements.alignment)?;
 
         self.device.bind_image_memory(image, memory, offset)?;
@@ -279,25 +400,31 @@ impl GpuMemory {
                 offset,
                 size,
                 memory_type_index,
+                memory_block_index,
+                allocator: AllocatorType::Image,
             }),
             info: *info,
         })
     }
 
     pub unsafe fn free_image(&mut self, allocation: GpuAllocation) -> anyhow::Result<()> {
+        assert_eq!(allocation.allocator, AllocatorType::Image);
         self.images
             .get_mut(&allocation.memory_type_index)
-            .and_then(|memory_type| {
-                memory_type
-                    .memory_blocks
-                    .iter_mut()
-                    .find(|x| x.raw == allocation.memory)
-            })
-            .expect("pls dont tamper with GpuAllocation")
+            .ok_or_else(|| anyhow::anyhow!("mismatched allocation memory type"))?
+            .memory_blocks
+            .get_mut(allocation.memory_block_index)
+            .ok_or_else(|| anyhow::anyhow!("out of range memory block index"))?
             .allocator
-            .free(Some(&allocation))?;
-        Ok(())
+            .free(Some(&allocation))
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum AllocatorType {
+    Linear,
+    List,
+    Image,
 }
 
 #[derive(Debug)]
@@ -306,6 +433,8 @@ pub struct GpuAllocation {
     pub offset: vk::DeviceAddress,
     pub size: vk::DeviceSize,
     pub memory_type_index: u32,
+    pub memory_block_index: usize,
+    pub allocator: AllocatorType,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
