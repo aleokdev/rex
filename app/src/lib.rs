@@ -1,11 +1,7 @@
-mod buddy;
-mod buffer;
-mod cx;
-mod image;
-mod memory;
-mod util;
+mod renderer;
 
-use crate::cx::Cx;
+use crate::renderer::Cx;
+use std::time::Duration;
 use winit::{
     event::{Event, WindowEvent},
     event_loop::{ControlFlow, EventLoop},
@@ -21,7 +17,9 @@ impl App {
         Ok(App { cx })
     }
 
-    fn redraw(&mut self) {}
+    fn redraw(&mut self) -> anyhow::Result<()> {
+        unsafe { self.cx.draw() }
+    }
 }
 
 pub fn run(width: u32, height: u32) -> anyhow::Result<()> {
@@ -34,6 +32,11 @@ pub fn run(width: u32, height: u32) -> anyhow::Result<()> {
         match event {
             Event::WindowEvent { event, .. } => match event {
                 WindowEvent::Resized(new_size) => unsafe {
+                    app.cx.device.wait_for_fences(
+                        &[app.cx.render_queue_fence],
+                        true,
+                        Duration::from_secs(1).as_nanos() as u64,
+                    );
                     app.cx
                         .recreate_swapchain(new_size.width, new_size.height)
                         .unwrap();
@@ -45,7 +48,7 @@ pub fn run(width: u32, height: u32) -> anyhow::Result<()> {
             },
             Event::MainEventsCleared => app.cx.window.request_redraw(),
             Event::RedrawRequested(_) => {
-                app.redraw();
+                app.redraw().unwrap();
             }
             _ => {}
         }

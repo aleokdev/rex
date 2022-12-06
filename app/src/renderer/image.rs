@@ -1,6 +1,6 @@
 use ash::vk;
 
-use crate::{cx::Cx, memory::GpuAllocation};
+use super::{cx::Cx, memory::GpuAllocation};
 
 #[derive(Debug)]
 pub struct Image {
