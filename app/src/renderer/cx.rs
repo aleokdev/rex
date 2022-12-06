@@ -1,6 +1,8 @@
 use super::{
+    buffer::BufferArena,
     image::{Image, Texture},
-    memory::GpuMemory,
+    memory::{GpuMemory, MemoryUsage},
+    mesh::GpuVertex,
     util::subresource_range,
 };
 use ash::{
@@ -42,6 +44,7 @@ pub struct Cx {
     pub swapchain_images: Vec<Texture>,
 
     pub memory: GpuMemory,
+    pub arenas: Arenas,
     pub frame: u64,
 
     pub render_queue: (vk::Queue, u32),
@@ -143,6 +146,10 @@ impl Cx {
                         .sum()
                 })
                 .ok_or_else(|| anyhow::anyhow!("no GPUs on this system"))?;
+
+            let limits = instance
+                .get_physical_device_properties(physical_device)
+                .limits;
 
             let surface_formats =
                 surface_loader.get_physical_device_surface_formats(physical_device, surface)?;
@@ -381,6 +388,7 @@ impl Cx {
                 pipeline_layout,
 
                 memory,
+                arenas: Arenas::new(&limits),
                 frame: 0,
 
                 render_queue_fence: render_fence,
@@ -734,6 +742,54 @@ impl Drop for Cx {
             self.debug_utils_loader
                 .destroy_debug_utils_messenger(self.debug_callback, None);
             self.instance.destroy_instance(None);
+        }
+    }
+}
+
+pub struct Arenas {
+    pub vertex: BufferArena,
+    pub index: BufferArena,
+    pub uniform: BufferArena,
+}
+
+impl Arenas {
+    pub fn new(limits: &vk::PhysicalDeviceLimits) -> Self {
+        Arenas {
+            vertex: BufferArena::new_list(
+                vk::BufferCreateInfo::builder()
+                    .size(64 * 1024 * std::mem::size_of::<GpuVertex>() as u64)
+                    .usage(vk::BufferUsageFlags::TRANSFER_DST | vk::BufferUsageFlags::VERTEX_BUFFER)
+                    .sharing_mode(vk::SharingMode::EXCLUSIVE)
+                    .build(),
+                MemoryUsage::Gpu,
+                1,
+                false,
+                256 * std::mem::size_of::<GpuVertex>() as u64,
+            ),
+            index: BufferArena::new_list(
+                vk::BufferCreateInfo::builder()
+                    .size(64 * 1024 * std::mem::size_of::<u32>() as u64)
+                    .usage(vk::BufferUsageFlags::TRANSFER_DST | vk::BufferUsageFlags::INDEX_BUFFER)
+                    .sharing_mode(vk::SharingMode::EXCLUSIVE)
+                    .build(),
+                MemoryUsage::Gpu,
+                1,
+                false,
+                256 * std::mem::size_of::<u32>() as u64,
+            ),
+            uniform: BufferArena::new_list(
+                vk::BufferCreateInfo::builder()
+                    .size(64 * 128 * 1024)
+                    .usage(
+                        vk::BufferUsageFlags::TRANSFER_DST | vk::BufferUsageFlags::UNIFORM_BUFFER,
+                    )
+                    .sharing_mode(vk::SharingMode::EXCLUSIVE)
+                    .build(),
+                MemoryUsage::Gpu,
+                limits.min_uniform_buffer_offset_alignment,
+                false,
+                128,
+            ),
         }
     }
 }

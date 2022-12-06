@@ -1,6 +1,6 @@
 use super::{buddy::BuddyAllocator, buffer::Buffer, image::Image};
 use ash::vk;
-use std::collections::HashMap;
+use std::{collections::HashMap, ffi::c_void, ptr::NonNull};
 use thiserror::Error;
 
 const DEVICE_BLOCK_SIZE: u64 = 256 * 1024 * 1024;
@@ -8,17 +8,17 @@ const HOST_BLOCK_SIZE: u64 = 64 * 1024 * 1024;
 const MIN_ALLOC_SIZE: u64 = 1024;
 const BASE_ORDER: u8 = log2_ceil(MIN_ALLOC_SIZE) as u8;
 
-const fn log2_ceil(x: u64) -> u32 {
+pub const fn log2_ceil(x: u64) -> u32 {
     u64::BITS - x.leading_zeros()
 }
 
-const fn level_count(size: u64) -> u8 {
-    log2_ceil(size / MIN_ALLOC_SIZE) as u8
+pub const fn level_count(size: u64, min_alloc: u64) -> u8 {
+    log2_ceil(size / min_alloc) as u8
 }
 
 #[derive(Error, Debug)]
 #[error("OOM")]
-struct OutOfMemory;
+pub struct OutOfMemory;
 
 #[derive(Clone)]
 pub enum Allocator {
@@ -159,11 +159,11 @@ impl GpuMemory {
 
     pub unsafe fn allocate_scratch_buffer(
         &mut self,
-        info: &vk::BufferCreateInfo,
+        info: vk::BufferCreateInfo,
         usage: MemoryUsage,
         mapped: bool,
     ) -> anyhow::Result<Buffer> {
-        let buffer = self.device.create_buffer(info, None)?;
+        let buffer = self.device.create_buffer(&info, None)?;
         let requirements = self.device.get_buffer_memory_requirements(buffer);
 
         let allocation = match self.allocate_scratch(usage, &requirements, mapped) {
@@ -181,6 +181,7 @@ impl GpuMemory {
 
         Ok(Buffer {
             raw: buffer,
+            info,
             allocation,
         })
     }
@@ -244,10 +245,12 @@ impl GpuMemory {
         let (memory, offset, size, memory_block_index) =
             memory_type.allocate(&self.device, requirements.size, requirements.alignment)?;
 
-        if mapped {
+        let mapped = if mapped {
             self.device
-                .map_memory(memory, offset, size, vk::MemoryMapFlags::default())?;
-        }
+                .map_memory(memory, offset, size, vk::MemoryMapFlags::default())?
+        } else {
+            std::ptr::null_mut()
+        };
 
         Ok(GpuAllocation {
             memory,
@@ -256,16 +259,17 @@ impl GpuMemory {
             memory_type_index,
             memory_block_index,
             allocator: AllocatorType::Linear,
+            mapped,
         })
     }
 
     pub unsafe fn allocate_buffer(
         &mut self,
-        info: &vk::BufferCreateInfo,
+        info: vk::BufferCreateInfo,
         usage: MemoryUsage,
         mapped: bool,
     ) -> anyhow::Result<Buffer> {
-        let buffer = self.device.create_buffer(info, None)?;
+        let buffer = self.device.create_buffer(&info, None)?;
         let requirements = self.device.get_buffer_memory_requirements(buffer);
 
         let allocation = match self.allocate_list(usage, &requirements, mapped) {
@@ -281,6 +285,7 @@ impl GpuMemory {
 
         Ok(Buffer {
             raw: buffer,
+            info,
             allocation,
         })
     }
@@ -339,7 +344,7 @@ impl GpuMemory {
                 block_size,
                 mappable: memory_props.contains(vk::MemoryPropertyFlags::HOST_VISIBLE),
                 default_allocator: Allocator::Buddy(BuddyAllocator::new(
-                    level_count(block_size),
+                    level_count(block_size, MIN_ALLOC_SIZE),
                     BASE_ORDER,
                 )),
             });
@@ -347,10 +352,12 @@ impl GpuMemory {
         let (memory, offset, size, memory_block_index) =
             memory_type.allocate(&self.device, requirements.size, requirements.alignment)?;
 
-        if mapped {
+        let mapped = if mapped {
             self.device
-                .map_memory(memory, offset, size, vk::MemoryMapFlags::default())?;
-        }
+                .map_memory(memory, offset, size, vk::MemoryMapFlags::default())?
+        } else {
+            std::ptr::null_mut()
+        };
 
         Ok(GpuAllocation {
             memory,
@@ -359,6 +366,7 @@ impl GpuMemory {
             memory_type_index,
             memory_block_index,
             allocator: AllocatorType::List,
+            mapped,
         })
     }
 
@@ -383,7 +391,7 @@ impl GpuMemory {
                 block_size: DEVICE_BLOCK_SIZE,
                 mappable: false,
                 default_allocator: Allocator::Buddy(BuddyAllocator::new(
-                    level_count(DEVICE_BLOCK_SIZE),
+                    level_count(DEVICE_BLOCK_SIZE, MIN_ALLOC_SIZE),
                     BASE_ORDER,
                 )),
             });
@@ -402,6 +410,7 @@ impl GpuMemory {
                 memory_type_index,
                 memory_block_index,
                 allocator: AllocatorType::Image,
+                mapped: std::ptr::null_mut(),
             }),
             info: *info,
         })
@@ -435,6 +444,7 @@ pub struct GpuAllocation {
     pub memory_type_index: u32,
     pub memory_block_index: usize,
     pub allocator: AllocatorType,
+    pub mapped: *mut c_void,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
