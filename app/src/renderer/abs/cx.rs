@@ -1,3 +1,5 @@
+mod debug_callback;
+
 use super::{
     image::{Image, Texture},
     util::subresource_range,
@@ -11,7 +13,6 @@ use ash::{
 };
 use cstr::cstr;
 use raw_window_handle::{HasRawDisplayHandle, HasRawWindowHandle};
-use std::{borrow::Cow, ffi::CStr};
 use winit::{
     dpi::PhysicalSize,
     event_loop::EventLoop,
@@ -90,7 +91,7 @@ impl Cx {
                         | vk::DebugUtilsMessageTypeFlagsEXT::VALIDATION
                         | vk::DebugUtilsMessageTypeFlagsEXT::PERFORMANCE,
                 )
-                .pfn_user_callback(Some(debug_callback)),
+                .pfn_user_callback(Some(debug_callback::debug_callback)),
             None,
         )?;
 
@@ -351,37 +352,4 @@ impl Drop for Cx {
             self.instance.destroy_instance(None);
         }
     }
-}
-
-unsafe extern "system" fn debug_callback(
-    severity: vk::DebugUtilsMessageSeverityFlagsEXT,
-    ty: vk::DebugUtilsMessageTypeFlagsEXT,
-    cb_data: *const vk::DebugUtilsMessengerCallbackDataEXT,
-    _user_data: *mut std::os::raw::c_void,
-) -> vk::Bool32 {
-    let cb_data = *cb_data;
-
-    let name = if cb_data.p_message_id_name.is_null() {
-        Cow::from("")
-    } else {
-        CStr::from_ptr(cb_data.p_message_id_name).to_string_lossy()
-    };
-
-    let message = if cb_data.p_message.is_null() {
-        Cow::from("")
-    } else {
-        CStr::from_ptr(cb_data.p_message).to_string_lossy()
-    };
-
-    let level = if severity.contains(vk::DebugUtilsMessageSeverityFlagsEXT::INFO) {
-        log::Level::Info
-    } else if severity.contains(vk::DebugUtilsMessageSeverityFlagsEXT::WARNING) {
-        log::Level::Warn
-    } else {
-        log::Level::Error
-    };
-
-    log::log!(level, "{:?} [{}]: {}", ty, name, message);
-
-    vk::FALSE
 }
