@@ -1,7 +1,7 @@
 use std::ffi::CStr;
 
 use super::{
-    abs::{self, memory::GpuMemory},
+    abs::{self, memory::GpuMemory, Cx},
     world::World,
 };
 use ash::vk;
@@ -537,6 +537,7 @@ impl Renderer {
             cx.device.destroy_command_pool(frame.cmd_pool, None);
         });
 
+        self.arenas.destroy(cx, &mut self.memory)?;
         drop(self.ds_layout_cache);
         drop(self.ds_allocator);
         drop(self.memory);
@@ -611,5 +612,13 @@ impl Arenas {
                 128,
             ),
         }
+    }
+
+    pub unsafe fn destroy(self, cx: &mut Cx, memory: &mut GpuMemory) -> anyhow::Result<()> {
+        self.vertex.destroy(cx, memory)?;
+        self.index.destroy(cx, memory)?;
+        self.uniform.destroy(cx, memory)?;
+        self.scratch.destroy(cx, memory)?;
+        Ok(())
     }
 }
