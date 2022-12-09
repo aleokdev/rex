@@ -361,6 +361,7 @@ impl Renderer {
                 .reset_command_pool(frame.cmd_pool, vk::CommandPoolResetFlags::empty())?;
         }
 
+        cx.device.free_command_buffers(frame.cmd_pool, &[frame.cmd]);
         frame.cmd = cx.device.allocate_command_buffers(
             &vk::CommandBufferAllocateInfo::builder()
                 .command_buffer_count(1)
