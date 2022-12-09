@@ -11,13 +11,16 @@ pub struct Camera {
     right: glam::Vec3,
     up: glam::Vec3,
 
+    /// Camera rotation around the Y axis, in radians
     yaw: f32,
+    /// Camera rotation around the X axis, in radians
     pitch: f32,
 }
 
 impl Camera {
-    const LOOK_SENSITIVITY: f32 = 0.1;
+    const LOOK_SENSITIVITY: f32 = 0.01;
     const MOVE_SPEED: f32 = 0.05;
+    const PITCH_ANGLE_LIMIT: f32 = std::f32::consts::FRAC_PI_2 - 0.1;
 
     pub fn new(cx: &abs::Cx) -> Self {
         Camera {
@@ -27,9 +30,9 @@ impl Camera {
             fovy: 60.0f32.to_radians(),
 
             position: glam::Vec3::ZERO,
-            forward: glam::Vec3::new(1., 0., 0.),
-            right: glam::Vec3::new(1., 0., 0.),
-            up: glam::Vec3::new(0., 1., 0.),
+            right: glam::Vec3::X,
+            up: glam::Vec3::Y,
+            forward: glam::Vec3::Z,
 
             yaw: 0.,
             pitch: 0.,
@@ -49,12 +52,12 @@ impl Camera {
         let dy = dy * Self::LOOK_SENSITIVITY;
 
         self.yaw += dx;
-        self.pitch = (self.pitch + dy).clamp(-89., 89.);
+        self.pitch = (self.pitch + dy).clamp(-Self::PITCH_ANGLE_LIMIT, Self::PITCH_ANGLE_LIMIT);
 
         let dir = glam::Vec3::new(
-            self.yaw.to_radians().cos() * self.pitch.to_radians().cos(),
-            self.pitch.to_radians().sin(),
-            self.yaw.to_radians().sin() * self.pitch.to_radians().cos(),
+            self.yaw.cos() * self.pitch.cos(),
+            self.pitch.sin(),
+            self.yaw.sin() * self.pitch.cos(),
         );
 
         self.forward = dir.normalize();
