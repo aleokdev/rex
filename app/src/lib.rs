@@ -1,7 +1,9 @@
 mod renderer;
 
-use renderer::{abs, render};
-use std::time::Duration;
+use renderer::{
+    abs, render,
+    world::{Camera, World},
+};
 use winit::{
     event::{Event, WindowEvent},
     event_loop::{ControlFlow, EventLoop},
@@ -10,17 +12,27 @@ use winit::{
 struct App {
     pub cx: abs::Cx,
     pub renderer: render::Renderer,
+    pub world: World,
 }
 
 impl App {
     unsafe fn new(event_loop: &EventLoop<()>, width: u32, height: u32) -> anyhow::Result<Self> {
         let mut cx = abs::Cx::new(event_loop, width, height)?;
         let renderer = render::Renderer::new(&mut cx)?;
-        Ok(App { cx, renderer })
+        let world = World {
+            camera: Camera::new(&cx),
+            cube: glam::Vec3::ZERO,
+        };
+
+        Ok(App {
+            cx,
+            renderer,
+            world,
+        })
     }
 
     unsafe fn redraw(&mut self) -> anyhow::Result<()> {
-        self.renderer.draw(&mut self.cx)
+        self.renderer.draw(&mut self.cx, &self.world)
     }
 }
 
@@ -28,6 +40,9 @@ pub fn run(width: u32, height: u32) -> anyhow::Result<()> {
     let event_loop = EventLoop::new();
     let mut app = unsafe { App::new(&event_loop, width, height)? };
 
+    let mut forward = 0.;
+    let mut right = 0.;
+    let mut last_mouse = glam::Vec2::ZERO;
     event_loop.run(move |event, _target, control_flow| {
         *control_flow = ControlFlow::Poll;
 
@@ -42,10 +57,58 @@ pub fn run(width: u32, height: u32) -> anyhow::Result<()> {
                 WindowEvent::CloseRequested => {
                     *control_flow = ControlFlow::Exit;
                 }
+                WindowEvent::KeyboardInput { input, .. } => {
+                    match (input.virtual_keycode, input.state) {
+                        (
+                            Some(winit::event::VirtualKeyCode::W),
+                            winit::event::ElementState::Pressed,
+                        ) => forward += 1.,
+                        (
+                            Some(winit::event::VirtualKeyCode::W),
+                            winit::event::ElementState::Released,
+                        ) => forward -= 1.,
+                        (
+                            Some(winit::event::VirtualKeyCode::S),
+                            winit::event::ElementState::Pressed,
+                        ) => forward -= 1.,
+                        (
+                            Some(winit::event::VirtualKeyCode::S),
+                            winit::event::ElementState::Released,
+                        ) => forward += 1.,
+                        (
+                            Some(winit::event::VirtualKeyCode::D),
+                            winit::event::ElementState::Pressed,
+                        ) => right += 1.,
+                        (
+                            Some(winit::event::VirtualKeyCode::D),
+                            winit::event::ElementState::Released,
+                        ) => right -= 1.,
+                        (
+                            Some(winit::event::VirtualKeyCode::A),
+                            winit::event::ElementState::Pressed,
+                        ) => right -= 1.,
+                        (
+                            Some(winit::event::VirtualKeyCode::A),
+                            winit::event::ElementState::Released,
+                        ) => right += 1.,
+                        _ => {}
+                    }
+                }
+                WindowEvent::CursorMoved { position, .. } => {
+                    let pos = glam::Vec2::new(position.x as f32, position.y as f32);
+                    if last_mouse == glam::Vec2::ZERO {
+                        last_mouse = pos;
+                    }
+                    let delta = pos - last_mouse;
+                    last_mouse = pos;
+                    app.world.camera.look(delta.x, delta.y);
+                }
                 _ => {}
             },
             Event::MainEventsCleared => app.cx.window.request_redraw(),
             Event::RedrawRequested(_) => unsafe {
+                app.world.camera.move_forward(forward);
+                app.world.camera.move_right(right);
                 app.redraw().unwrap();
             },
             Event::LoopDestroyed => unsafe {

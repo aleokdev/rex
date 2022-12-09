@@ -1,6 +1,6 @@
 // https://github.com/Restioson/buddy-allocator-workshop
 
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct BuddyAllocator {
     tree: Vec<Block>,
 
@@ -49,6 +49,8 @@ impl BuddyAllocator {
     }
 
     pub fn allocate(&mut self, desired_order: u8) -> Option<u64> {
+        assert!(desired_order <= self.max_order);
+
         let root = self.block_mut(0);
 
         if root.order_free == 0 || (root.order_free - 1) < desired_order {
@@ -133,7 +135,28 @@ impl BuddyAllocator {
     }
 }
 
-#[derive(Clone)]
+pub fn order_of(x: u64, base_order: u8) -> u8 {
+    if x == 0 {
+        return 0;
+    }
+
+    let mut i = x;
+    let mut log2 = 0;
+    while i > 0 {
+        i >>= 1;
+        log2 += 1;
+    }
+
+    let log2 = log2;
+
+    if log2 > base_order {
+        log2 - base_order
+    } else {
+        0
+    }
+}
+
+#[derive(Debug, Clone)]
 struct Block {
     order_free: u8,
 }

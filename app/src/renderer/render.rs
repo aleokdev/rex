@@ -1,15 +1,21 @@
 use std::ffi::CStr;
 
-use super::abs::{self, memory::GpuMemory};
+use super::{
+    abs::{self},
+    world::World,
+};
 use ash::vk;
 
 pub struct Frame {
     pub present_semaphore: vk::Semaphore,
     pub render_semaphore: vk::Semaphore,
     pub render_fence: vk::Fence,
+    pub cmd_pool: vk::CommandPool,
     pub cmd: vk::CommandBuffer,
-    pub allocator: GpuMemory,
+    pub allocator: abs::memory::GpuMemory,
     pub deletion: Vec<Box<dyn FnOnce(&mut abs::Cx)>>,
+
+    pub counter: u64,
 }
 
 impl Frame {
@@ -23,23 +29,29 @@ impl Frame {
         let present_semaphore = cx.device.create_semaphore(&semaphore_info, None)?;
         let render_semaphore = cx.device.create_semaphore(&semaphore_info, None)?;
 
+        let cmd_pool = cx
+            .device
+            .create_command_pool(&vk::CommandPoolCreateInfo::builder(), None)?;
+
         Ok(Frame {
             present_semaphore,
             render_semaphore,
             render_fence,
+            cmd_pool,
             cmd: vk::CommandBuffer::null(),
-            allocator: GpuMemory::new(&cx.device, &cx.instance, cx.physical_device)?,
+            allocator: abs::memory::GpuMemory::new(&cx.device, &cx.instance, cx.physical_device)?,
             deletion: vec![],
+
+            counter: 0,
         })
     }
 }
 
 pub struct Renderer {
     pub memory: abs::memory::GpuMemory,
+    pub ds_allocator: abs::descriptor::DescriptorAllocator,
+    pub ds_layout_cache: abs::descriptor::DescriptorLayoutCache,
     pub arenas: Arenas,
-    pub cmd_pool: vk::CommandPool,
-    pub free_cmds: Vec<vk::CommandBuffer>,
-    pub used_cmds: Vec<vk::CommandBuffer>,
     pub frame: u64,
 
     pub vertex_shader: vk::ShaderModule,
@@ -50,23 +62,28 @@ pub struct Renderer {
     pub pass: vk::RenderPass,
     pub framebuffers: Vec<vk::Framebuffer>,
 
-    pub frames: [Frame; Self::FRAME_OVERLAP],
+    pub cube: abs::mesh::GpuMesh,
+    pub uniforms: abs::buffer::BufferSlice,
+    pub uniform_set: vk::DescriptorSet,
+
+    pub frames: [Option<Frame>; Self::FRAME_OVERLAP],
+    pub deletion: Vec<Box<dyn FnOnce(&mut abs::Cx)>>,
 }
 
 impl Renderer {
     const FRAME_OVERLAP: usize = 2;
 
     pub unsafe fn new(cx: &mut abs::Cx) -> anyhow::Result<Self> {
-        let memory = abs::memory::GpuMemory::new(&cx.device, &cx.instance, cx.physical_device)?;
-        let arenas = Arenas::new(
+        let mut memory = abs::memory::GpuMemory::new(&cx.device, &cx.instance, cx.physical_device)?;
+
+        let mut ds_allocator = abs::descriptor::DescriptorAllocator::new(cx);
+        let mut ds_layout_cache = abs::descriptor::DescriptorLayoutCache::new(cx);
+
+        let mut arenas = Arenas::new(
             &cx.instance
                 .get_physical_device_properties(cx.physical_device)
                 .limits,
         );
-
-        let cmd_pool = cx
-            .device
-            .create_command_pool(&vk::CommandPoolCreateInfo::builder(), None)?;
 
         let color_attachment = vk::AttachmentDescription::builder()
             .format(cx.surface_format.format)
@@ -122,9 +139,27 @@ impl Renderer {
             None,
         )?;
 
-        let pipeline_layout = cx
-            .device
-            .create_pipeline_layout(&vk::PipelineLayoutCreateInfo::default(), None)?;
+        let uniforms = arenas
+            .uniform
+            .suballocate(&mut memory, std::mem::size_of::<[f32; 16]>() as u64)?;
+
+        let (uniform_set, uniform_set_layout) = abs::descriptor::DescriptorBuilder::new()
+            .bind_buffer(
+                0,
+                &[vk::DescriptorBufferInfo::builder()
+                    .buffer(uniforms.buffer.raw)
+                    .offset(uniforms.offset)
+                    .range(std::mem::size_of::<[f32; 16]>() as u64)
+                    .build()],
+                vk::DescriptorType::UNIFORM_BUFFER,
+                vk::ShaderStageFlags::VERTEX,
+            )
+            .build(cx, &mut ds_allocator, &mut ds_layout_cache)?;
+
+        let pipeline_layout = cx.device.create_pipeline_layout(
+            &vk::PipelineLayoutCreateInfo::builder().set_layouts(&[uniform_set_layout]),
+            None,
+        )?;
 
         const ENTRY_POINT: &CStr = cstr::cstr!("main");
         let stages = &[
@@ -203,12 +238,16 @@ impl Renderer {
             .create_graphics_pipelines(vk::PipelineCache::null(), &[*pipeline_info], None)
             .map_err(|(_, e)| e)?[0];
 
+        let cube = abs::mesh::GpuMesh {
+            vertices: abs::buffer::BufferSlice::null(),
+            indices: abs::buffer::BufferSlice::null(),
+        };
+
         Ok(Renderer {
             memory,
+            ds_allocator,
+            ds_layout_cache,
             arenas,
-            cmd_pool,
-            free_cmds: vec![],
-            used_cmds: vec![],
             frame: 0,
 
             vertex_shader,
@@ -219,7 +258,12 @@ impl Renderer {
             pass,
             framebuffers,
 
-            frames: [Frame::new(cx)?, Frame::new(cx)?],
+            cube,
+            uniforms,
+            uniform_set,
+
+            frames: [Some(Frame::new(cx)?), Some(Frame::new(cx)?)],
+            deletion: vec![],
         })
     }
 
@@ -263,7 +307,7 @@ impl Renderer {
             .collect()
     }
 
-    pub unsafe fn draw(&mut self, cx: &mut abs::Cx) -> anyhow::Result<()> {
+    pub unsafe fn draw(&mut self, cx: &mut abs::Cx, world: &World) -> anyhow::Result<()> {
         // - Wait for the render queue fence:
         //      We don't want to submit to the queue while it is busy!
         // - Reset it:
@@ -300,9 +344,11 @@ impl Renderer {
         // [ Setup GPU work    -> Present image #1  ] wait for the next refresh cycle for a
         // [ Wait for fence    ][ Acquire image #2  ] new image to be available.
 
-        let cmd = self.acquire_cmd_buffer(cx)?;
-        let frame = &mut self.frames[self.frame as usize % self.frames.len()];
-        frame.cmd = cmd;
+        let first = self.frame == 0;
+
+        let mut frame = self.frames[self.frame as usize % self.frames.len()]
+            .take()
+            .unwrap();
         frame.deletion.drain(..).for_each(|f| f(cx));
         frame.allocator.free_scratch()?;
 
@@ -311,6 +357,20 @@ impl Renderer {
             true,
             std::time::Duration::from_secs(1).as_nanos() as u64,
         )?;
+
+        frame.allocator.free_scratch()?;
+
+        if frame.counter % 128 == 0 {
+            cx.device
+                .reset_command_pool(frame.cmd_pool, vk::CommandPoolResetFlags::empty())?;
+        }
+
+        frame.cmd = cx.device.allocate_command_buffers(
+            &vk::CommandBufferAllocateInfo::builder()
+                .command_buffer_count(1)
+                .level(vk::CommandBufferLevel::PRIMARY)
+                .command_pool(frame.cmd_pool),
+        )?[0];
 
         cx.device.reset_fences(&[frame.render_fence])?;
 
@@ -326,6 +386,20 @@ impl Renderer {
             &ash::vk::CommandBufferBeginInfo::builder()
                 .flags(ash::vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT),
         )?;
+
+        if first {
+            self.setup(cx, &mut frame)?;
+        }
+
+        abs::memory::stage(
+            &cx.device,
+            &mut frame.allocator,
+            frame.cmd,
+            &(world.camera.proj() * world.camera.view()).to_cols_array(),
+            &self.uniforms,
+        )?;
+
+        abs::memory::stage_sync(&cx.device, frame.cmd);
 
         cx.device.cmd_begin_render_pass(
             frame.cmd,
@@ -353,6 +427,16 @@ impl Renderer {
             ash::vk::PipelineBindPoint::GRAPHICS,
             self.pipeline,
         );
+
+        cx.device.cmd_bind_descriptor_sets(
+            frame.cmd,
+            vk::PipelineBindPoint::GRAPHICS,
+            self.pipeline_layout,
+            0,
+            &[self.uniform_set],
+            &[],
+        );
+
         cx.device.cmd_draw(frame.cmd, 3, 1, 0, 0);
 
         cx.device.cmd_end_render_pass(frame.cmd);
@@ -380,45 +464,63 @@ impl Renderer {
                 .image_indices(&[swapchain_img_index]),
         )?;
 
+        frame.counter += 1;
+        self.frames[self.frame as usize % self.frames.len()] = Some(frame);
+        self.frame += 1;
+
         Ok(())
     }
 
-    pub unsafe fn acquire_cmd_buffer(
-        &mut self,
-        cx: &mut abs::Cx,
-    ) -> anyhow::Result<vk::CommandBuffer> {
-        self.frame += 1;
+    pub unsafe fn setup(&mut self, cx: &mut abs::Cx, frame: &mut Frame) -> anyhow::Result<()> {
+        self.cube.vertices = self.arenas.vertex.suballocate(
+            &mut self.memory,
+            std::mem::size_of::<[abs::mesh::GpuVertex; 3]>() as u64,
+        )?;
 
-        if self.frame % 128 == 0 {
-            self.free_cmds = self.used_cmds.drain(..).collect();
-            cx.device
-                .reset_command_pool(self.cmd_pool, Default::default())?;
-        }
+        self.cube.indices = self
+            .arenas
+            .index
+            .suballocate(&mut self.memory, std::mem::size_of::<[u32; 3]>() as u64)?;
 
-        if self.free_cmds.is_empty() {
-            self.free_cmds = cx.device.allocate_command_buffers(
-                &vk::CommandBufferAllocateInfo::builder()
-                    .command_buffer_count(128)
-                    .command_pool(self.cmd_pool)
-                    .level(vk::CommandBufferLevel::PRIMARY),
-            )?;
-        }
+        self.cube.upload(
+            cx,
+            &mut frame.allocator,
+            frame.cmd,
+            &[
+                abs::mesh::GpuVertex {
+                    position: [0., 0., 0.],
+                    normal: [0., 0., 0.],
+                },
+                abs::mesh::GpuVertex {
+                    position: [0., 0., 0.],
+                    normal: [0., 0., 0.],
+                },
+                abs::mesh::GpuVertex {
+                    position: [0., 0., 0.],
+                    normal: [0., 0., 0.],
+                },
+            ],
+            &[0, 1, 2],
+        )?;
 
-        let cmd = self.free_cmds.pop().unwrap();
-        self.used_cmds.push(cmd);
-        Ok(cmd)
+        Ok(())
     }
 
-    pub unsafe fn destroy(&self, cx: &mut abs::Cx) -> anyhow::Result<()> {
+    pub unsafe fn destroy(&mut self, cx: &mut abs::Cx) -> anyhow::Result<()> {
         cx.device.device_wait_idle().unwrap();
 
-        cx.device
-            .reset_command_pool(self.cmd_pool, Default::default())?;
+        self.deletion.drain(..).for_each(|f| f(cx));
 
         self.frames.iter().for_each(|frame| {
+            let frame = frame.as_ref().unwrap();
             cx.device.destroy_fence(frame.render_fence, None);
             cx.device.destroy_semaphore(frame.present_semaphore, None);
             cx.device.destroy_semaphore(frame.render_semaphore, None);
+
+            cx.device
+                .reset_command_pool(frame.cmd_pool, Default::default())
+                .unwrap();
+            cx.device.destroy_command_pool(frame.cmd_pool, None);
         });
 
         cx.device
@@ -426,7 +528,6 @@ impl Renderer {
         cx.device.destroy_pipeline(self.pipeline, None);
         cx.device.destroy_shader_module(self.vertex_shader, None);
         cx.device.destroy_shader_module(self.fragment_shader, None);
-        cx.device.destroy_command_pool(self.cmd_pool, None);
         cx.device.destroy_render_pass(self.pass, None);
         self.framebuffers
             .iter()
@@ -440,6 +541,7 @@ pub struct Arenas {
     pub vertex: abs::buffer::BufferArena,
     pub index: abs::buffer::BufferArena,
     pub uniform: abs::buffer::BufferArena,
+    pub scratch: abs::buffer::BufferArena,
 }
 
 impl Arenas {
@@ -478,6 +580,17 @@ impl Arenas {
                 abs::memory::MemoryUsage::Gpu,
                 limits.min_uniform_buffer_offset_alignment,
                 false,
+                128,
+            ),
+            scratch: abs::buffer::BufferArena::new_list(
+                vk::BufferCreateInfo::builder()
+                    .size(64 * 128 * 1024)
+                    .usage(vk::BufferUsageFlags::TRANSFER_SRC)
+                    .sharing_mode(vk::SharingMode::EXCLUSIVE)
+                    .build(),
+                abs::memory::MemoryUsage::CpuToGpu,
+                1,
+                true,
                 128,
             ),
         }

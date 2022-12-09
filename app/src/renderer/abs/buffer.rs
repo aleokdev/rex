@@ -1,7 +1,4 @@
-use std::collections::HashMap;
-
 use super::memory::OutOfMemory;
-
 use super::{
     buddy::BuddyAllocator,
     cx::Cx,
@@ -9,7 +6,7 @@ use super::{
 };
 use ash::vk;
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Buffer {
     pub raw: vk::Buffer,
     pub info: vk::BufferCreateInfo,
@@ -17,6 +14,14 @@ pub struct Buffer {
 }
 
 impl Buffer {
+    pub fn null() -> Self {
+        Buffer {
+            raw: vk::Buffer::null(),
+            info: Default::default(),
+            allocation: GpuAllocation::null(),
+        }
+    }
+
     pub unsafe fn destroy(self, cx: &mut Cx, memory: &mut GpuMemory) -> anyhow::Result<()> {
         memory.free_buffer(self.allocation)?;
         cx.device.destroy_buffer(self.raw, None);
@@ -81,7 +86,7 @@ impl BufferArena {
             match allocator.allocate(buffer.allocation.size, size, self.alignment) {
                 Ok((offset, size)) => {
                     return Ok((BufferSlice {
-                        buffer: buffer.raw,
+                        buffer: buffer.clone(),
                         offset,
                         size,
                     }))
@@ -102,8 +107,19 @@ impl BufferArena {
     }
 }
 
+#[derive(Debug, Clone)]
 pub struct BufferSlice {
-    pub buffer: vk::Buffer,
+    pub buffer: Buffer,
     pub offset: vk::DeviceAddress,
     pub size: vk::DeviceSize,
+}
+
+impl BufferSlice {
+    pub fn null() -> Self {
+        BufferSlice {
+            buffer: Buffer::null(),
+            offset: 0,
+            size: 0,
+        }
+    }
 }

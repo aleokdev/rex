@@ -1,6 +1,10 @@
-use super::{buddy::BuddyAllocator, buffer::Buffer, image::Image};
+use super::{
+    buddy::BuddyAllocator,
+    buffer::{Buffer, BufferSlice},
+    image::Image,
+};
 use ash::vk;
-use std::{collections::HashMap, ffi::c_void, ptr::NonNull};
+use std::{collections::HashMap, ffi::c_void};
 use thiserror::Error;
 
 const DEVICE_BLOCK_SIZE: u64 = 256 * 1024 * 1024;
@@ -20,7 +24,7 @@ pub const fn level_count(size: u64, min_alloc: u64) -> u8 {
 #[error("OOM")]
 pub struct OutOfMemory;
 
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub enum Allocator {
     Linear { cursor: u64 },
     Buddy(BuddyAllocator),
@@ -48,7 +52,7 @@ impl Allocator {
                 Err(anyhow::Error::new(OutOfMemory))
             }
             Allocator::Buddy(allocator) => allocator
-                .allocate((u64::BITS - size.leading_zeros()) as u8)
+                .allocate(super::buddy::order_of(size, BASE_ORDER))
                 .ok_or_else(|| anyhow::Error::new(OutOfMemory))
                 .map(|offset| (offset, size.next_power_of_two())),
         }
@@ -65,7 +69,7 @@ impl Allocator {
                 let allocation = allocation.ok_or_else(|| anyhow::anyhow!("no allocation"))?;
                 allocator.deallocate(
                     allocation.offset,
-                    (u64::BITS - allocation.size.leading_zeros()) as u8,
+                    super::buddy::order_of(allocation.size, BASE_ORDER),
                 );
                 Ok(())
             }
@@ -73,9 +77,11 @@ impl Allocator {
     }
 }
 
+#[derive(Debug)]
 struct MemoryBlock {
     raw: vk::DeviceMemory,
     allocator: Allocator,
+    mapped: *mut c_void,
 }
 
 struct MemoryType {
@@ -83,7 +89,7 @@ struct MemoryType {
     memory_props: vk::MemoryPropertyFlags,
     memory_type_index: u32,
     block_size: u64,
-    mappable: bool,
+    mapped: bool,
     default_allocator: Allocator,
 }
 
@@ -96,9 +102,16 @@ impl MemoryType {
             None,
         )?;
 
+        let mapped = if self.mapped {
+            device.map_memory(memory, 0, self.block_size, vk::MemoryMapFlags::empty())?
+        } else {
+            std::ptr::null_mut()
+        };
+
         self.memory_blocks.push(MemoryBlock {
             raw: memory,
             allocator: self.default_allocator.clone(),
+            mapped,
         });
 
         Ok(())
@@ -109,11 +122,17 @@ impl MemoryType {
         device: &ash::Device,
         size: u64,
         alignment: u64,
-    ) -> anyhow::Result<(vk::DeviceMemory, u64, u64, usize)> {
+    ) -> anyhow::Result<(vk::DeviceMemory, u64, u64, usize, *mut c_void)> {
         for (i, block) in self.memory_blocks.iter_mut().enumerate() {
             match block.allocator.allocate(self.block_size, size, alignment) {
                 Ok((offset, size)) => {
-                    return Ok((block.raw, offset, size, i));
+                    return Ok((
+                        block.raw,
+                        offset,
+                        size,
+                        i,
+                        block.mapped.add(offset as usize),
+                    ));
                 }
                 Err(e) if !e.is::<OutOfMemory>() => {
                     return Err(e);
@@ -226,6 +245,12 @@ impl GpuMemory {
             ));
         }
 
+        let block_size = if memory_props.contains(vk::MemoryPropertyFlags::HOST_VISIBLE) {
+            HOST_BLOCK_SIZE
+        } else {
+            DEVICE_BLOCK_SIZE
+        };
+
         let memory_type = self
             .linear_linear
             .entry(memory_type_index)
@@ -233,24 +258,13 @@ impl GpuMemory {
                 memory_blocks: vec![],
                 memory_props,
                 memory_type_index,
-                block_size: if memory_props.contains(vk::MemoryPropertyFlags::DEVICE_LOCAL) {
-                    DEVICE_BLOCK_SIZE
-                } else {
-                    HOST_BLOCK_SIZE
-                },
-                mappable: memory_props.contains(vk::MemoryPropertyFlags::HOST_VISIBLE),
+                block_size,
+                mapped,
                 default_allocator: Allocator::Linear { cursor: 0 },
             });
 
-        let (memory, offset, size, memory_block_index) =
+        let (memory, offset, size, memory_block_index, mapped) =
             memory_type.allocate(&self.device, requirements.size, requirements.alignment)?;
-
-        let mapped = if mapped {
-            self.device
-                .map_memory(memory, offset, size, vk::MemoryMapFlags::default())?
-        } else {
-            std::ptr::null_mut()
-        };
 
         Ok(GpuAllocation {
             memory,
@@ -342,22 +356,15 @@ impl GpuMemory {
                 memory_props,
                 memory_type_index,
                 block_size,
-                mappable: memory_props.contains(vk::MemoryPropertyFlags::HOST_VISIBLE),
+                mapped,
                 default_allocator: Allocator::Buddy(BuddyAllocator::new(
                     level_count(block_size, MIN_ALLOC_SIZE),
                     BASE_ORDER,
                 )),
             });
 
-        let (memory, offset, size, memory_block_index) =
+        let (memory, offset, size, memory_block_index, mapped) =
             memory_type.allocate(&self.device, requirements.size, requirements.alignment)?;
-
-        let mapped = if mapped {
-            self.device
-                .map_memory(memory, offset, size, vk::MemoryMapFlags::default())?
-        } else {
-            std::ptr::null_mut()
-        };
 
         Ok(GpuAllocation {
             memory,
@@ -389,14 +396,14 @@ impl GpuMemory {
                 memory_props,
                 memory_type_index,
                 block_size: DEVICE_BLOCK_SIZE,
-                mappable: false,
+                mapped: false,
                 default_allocator: Allocator::Buddy(BuddyAllocator::new(
                     level_count(DEVICE_BLOCK_SIZE, MIN_ALLOC_SIZE),
                     BASE_ORDER,
                 )),
             });
 
-        let (memory, offset, size, memory_block_index) =
+        let (memory, offset, size, memory_block_index, _) =
             memory_type.allocate(&self.device, requirements.size, requirements.alignment)?;
 
         self.device.bind_image_memory(image, memory, offset)?;
@@ -431,12 +438,13 @@ impl GpuMemory {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum AllocatorType {
+    Null,
     Linear,
     List,
     Image,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct GpuAllocation {
     pub memory: vk::DeviceMemory,
     pub offset: vk::DeviceAddress,
@@ -445,6 +453,30 @@ pub struct GpuAllocation {
     pub memory_block_index: usize,
     pub allocator: AllocatorType,
     pub mapped: *mut c_void,
+}
+
+impl GpuAllocation {
+    pub fn null() -> Self {
+        GpuAllocation {
+            memory: vk::DeviceMemory::null(),
+            offset: 0,
+            size: 0,
+            memory_type_index: 0,
+            memory_block_index: 0,
+            allocator: AllocatorType::Null,
+            mapped: std::ptr::null_mut(),
+        }
+    }
+
+    pub unsafe fn write_mapped<T: Clone>(&self, data: &[T]) -> anyhow::Result<()> {
+        if self.mapped.is_null() {
+            return Err(anyhow::anyhow!("null mapped ptr"));
+        }
+
+        std::slice::from_raw_parts_mut(self.mapped as *mut T, data.len()).clone_from_slice(data);
+
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -473,6 +505,54 @@ impl MemoryUsage {
             }
         }
     }
+}
+
+pub unsafe fn stage<T: Clone>(
+    device: &ash::Device,
+    scratch: &mut GpuMemory,
+    cmd: vk::CommandBuffer,
+    src: &[T],
+    dst: &BufferSlice,
+) -> anyhow::Result<()> {
+    let staging = scratch.allocate_scratch_buffer(
+        vk::BufferCreateInfo::builder()
+            .size(std::mem::size_of::<T>() as u64 * src.len() as u64)
+            .usage(vk::BufferUsageFlags::TRANSFER_SRC)
+            .sharing_mode(vk::SharingMode::EXCLUSIVE)
+            .build(),
+        MemoryUsage::CpuToGpu,
+        true,
+    )?;
+
+    staging.allocation.write_mapped(src)?;
+
+    device.cmd_copy_buffer(
+        cmd,
+        staging.raw,
+        dst.buffer.raw,
+        &[vk::BufferCopy::builder()
+            .src_offset(0)
+            .dst_offset(dst.offset)
+            .size(staging.info.size)
+            .build()],
+    );
+
+    Ok(())
+}
+
+pub unsafe fn stage_sync(device: &ash::Device, cmd: vk::CommandBuffer) {
+    device.cmd_pipeline_barrier(
+        cmd,
+        vk::PipelineStageFlags::TRANSFER,
+        vk::PipelineStageFlags::TOP_OF_PIPE,
+        vk::DependencyFlags::empty(),
+        &[vk::MemoryBarrier::builder()
+            .src_access_mask(vk::AccessFlags::TRANSFER_WRITE)
+            .dst_access_mask(vk::AccessFlags::MEMORY_READ)
+            .build()],
+        &[],
+        &[],
+    );
 }
 
 fn find_properties(
