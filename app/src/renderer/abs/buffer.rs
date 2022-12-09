@@ -1,5 +1,3 @@
-use std::collections::HashMap;
-
 use super::memory::OutOfMemory;
 
 use super::{
@@ -80,11 +78,11 @@ impl BufferArena {
         for (buffer, allocator) in &mut self.buffers {
             match allocator.allocate(buffer.allocation.size, size, self.alignment) {
                 Ok((offset, size)) => {
-                    return Ok((BufferSlice {
+                    return Ok(BufferSlice {
                         buffer: buffer.raw,
                         offset,
                         size,
-                    }))
+                    })
                 }
                 Err(e) if !e.is::<OutOfMemory>() => {
                     return Err(e);

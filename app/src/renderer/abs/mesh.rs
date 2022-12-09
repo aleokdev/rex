@@ -1,6 +1,5 @@
 use super::{
-    buffer::{Buffer, BufferSlice},
-    cx,
+    buffer::BufferSlice,
     memory::{GpuMemory, MemoryUsage},
     Cx,
 };

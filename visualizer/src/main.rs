@@ -153,8 +153,8 @@ pub fn main() -> anyhow::Result<()> {
     let state = MainState::new(
         &std::env::args()
             .nth(1)
-            .map(|arg| PathBuf::from(arg))
-            .unwrap_or_else(|| std::env::current_dir().unwrap().to_owned()),
+            .map(PathBuf::from)
+            .unwrap_or_else(|| std::env::current_dir().unwrap()),
         &mut ctx,
     )?;
     event::run(ctx, event_loop, state)

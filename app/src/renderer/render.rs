@@ -257,8 +257,8 @@ impl Renderer {
                     .width(width)
                     .height(height)
                     .layers(1);
-                let framebuffer = device.create_framebuffer(&framebuffer_info, None);
-                framebuffer
+
+                device.create_framebuffer(&framebuffer_info, None)
             })
             .collect()
     }

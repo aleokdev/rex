@@ -1,11 +1,10 @@
 use std::{
-    collections::HashMap,
     fs,
     ops::ControlFlow,
     path::{Path, PathBuf},
 };
 
-use emath::{vec2, Pos2};
+use emath::vec2;
 use rand::Rng;
 
 // TODO: Custom result type

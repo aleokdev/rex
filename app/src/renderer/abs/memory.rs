@@ -1,6 +1,6 @@
 use super::{buddy::BuddyAllocator, buffer::Buffer, image::Image};
 use ash::vk;
-use std::{collections::HashMap, ffi::c_void, ptr::NonNull};
+use std::{collections::HashMap, ffi::c_void};
 use thiserror::Error;
 
 const DEVICE_BLOCK_SIZE: u64 = 256 * 1024 * 1024;
