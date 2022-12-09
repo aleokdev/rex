@@ -34,12 +34,23 @@ impl Frame {
             .device
             .create_command_pool(&vk::CommandPoolCreateInfo::builder(), None)?;
 
+        // (aleok): We have one fence per frame so only one command buffer is technically required;
+        // TODO: We could use multiple so we need to reset less often but I'm leaving that to False
+        // P.D: This change is justified since what we were doing previously was allocate one command
+        // buffer per frame (and crash because getting out of device memory about 30k frames in)
+        let cmd = cx.device.allocate_command_buffers(
+            &vk::CommandBufferAllocateInfo::builder()
+                .command_buffer_count(1)
+                .level(vk::CommandBufferLevel::PRIMARY)
+                .command_pool(cmd_pool),
+        )?[0];
+
         Ok(Frame {
             present_semaphore,
             render_semaphore,
             render_fence,
             cmd_pool,
-            cmd: vk::CommandBuffer::null(),
+            cmd,
             allocator: abs::memory::GpuMemory::new(&cx.device, &cx.instance, cx.physical_device)?,
             deletion: vec![],
 
@@ -304,17 +315,20 @@ impl Renderer {
     }
 
     pub unsafe fn draw(&mut self, cx: &mut abs::Cx, world: &World) -> anyhow::Result<()> {
-        // - Wait for the render queue fence:
-        //      We don't want to submit to the queue while it is busy!
-        // - Reset it:
-        //      Now that we've finished waiting, the queue is free again, we can reset the
-        //      fence.
+        // - Get the next frame to draw onto:
+        //      We have a few in-flight frames so the GPU doesn't stay still (And we don't need to
+        //      wait too much CPU-side for queue submissions to happen).
+        // - Wait for the frame render queue fence:
+        //      We only have command buffer per frame so we need to wait for the previous one before
+        //      submitting again, so we can reset it and use it once again.
+        // - Reset the frame command buffer so we can reuse it:
+        //      Technically we shouldn't do this, and we should have a couple command buffers to use
+        //      before resetting them all (Resetting command buffers individually is a bit slower
+        //      than resetting the entire pool)
+        // https://arm-software.github.io/vulkan_best_practice_for_mobile_developers/samples/performance/command_buffer_usage/command_buffer_usage_tutorial.html#resetting-individual-command-buffers
         // - Obtain the next image we should be drawing onto:
         //      Since we're using a swapchain, the driver should tell us which image of the
         //      swapchain we should be drawing onto; We can't draw directly onto the window.
-        // - Reset the command buffer:
-        //      We used it last frame (unless this is the first frame, in which case it is
-        //      already reset), now that the queue submit is finished we can safely reset it.
         // - Record commands to the buffer:
         //      We now are ready to tell the GPU what to do.
         //      - Begin a render pass:
@@ -356,18 +370,9 @@ impl Renderer {
 
         frame.allocator.free_scratch()?;
 
-        if frame.counter % 128 == 0 {
-            cx.device
-                .reset_command_pool(frame.cmd_pool, vk::CommandPoolResetFlags::empty())?;
-        }
-
-        cx.device.free_command_buffers(frame.cmd_pool, &[frame.cmd]);
-        frame.cmd = cx.device.allocate_command_buffers(
-            &vk::CommandBufferAllocateInfo::builder()
-                .command_buffer_count(1)
-                .level(vk::CommandBufferLevel::PRIMARY)
-                .command_pool(frame.cmd_pool),
-        )?[0];
+        // See TODO at Frame::new for why we are resetting the cmdbuffer each frame
+        cx.device
+            .reset_command_pool(frame.cmd_pool, vk::CommandPoolResetFlags::empty())?;
 
         cx.device.reset_fences(&[frame.render_fence])?;
 
