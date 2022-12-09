@@ -89,7 +89,7 @@ impl BufferArena {
                         buffer: buffer.clone(),
                         offset,
                         size,
-                    }))
+                    })
                 }
                 Err(e) if !e.is::<OutOfMemory>() => {
                     return Err(e);

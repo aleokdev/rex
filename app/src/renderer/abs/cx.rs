@@ -1,8 +1,5 @@
 use super::{
-    buffer::BufferArena,
     image::{Image, Texture},
-    memory::{GpuMemory, MemoryUsage},
-    mesh::GpuVertex,
     util::subresource_range,
 };
 use ash::{
@@ -14,7 +11,7 @@ use ash::{
 };
 use cstr::cstr;
 use raw_window_handle::{HasRawDisplayHandle, HasRawWindowHandle};
-use std::{borrow::Cow, ffi::CStr, time::Duration};
+use std::{borrow::Cow, ffi::CStr};
 use winit::{
     dpi::PhysicalSize,
     event_loop::EventLoop,
@@ -121,7 +118,7 @@ impl Cx {
             })
             .ok_or_else(|| anyhow::anyhow!("no GPUs on this system"))?;
 
-        let limits = instance
+        let _limits = instance
             .get_physical_device_properties(physical_device)
             .limits;
 

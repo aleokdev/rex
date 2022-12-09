@@ -1,5 +1,4 @@
 mod renderer;
-
 use renderer::{
     abs, render,
     world::{Camera, World},
