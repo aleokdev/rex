@@ -19,9 +19,12 @@ use winit::{
     window::{Window, WindowBuilder},
 };
 
+/// Represents a link to the GPU, and stores common data used by both compute and graphics.
 pub struct Cx {
     pub window: Window,
+    /// The width of the current swapchain, which may or may not coincide with the inner width of the window.
     pub width: u32,
+    /// The height of the current swapchain, which may or may not coincide with the inner height of the window.
     pub height: u32,
 
     pub instance: ash::Instance,
@@ -36,6 +39,7 @@ pub struct Cx {
     pub swapchain: vk::SwapchainKHR,
     pub swapchain_images: Vec<Texture>,
 
+    /// The queue used for rendering along with its index.
     pub render_queue: (vk::Queue, u32),
 }
 

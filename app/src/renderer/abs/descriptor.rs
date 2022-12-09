@@ -49,7 +49,6 @@ impl DescriptorAllocator {
 
     pub unsafe fn allocate(
         &mut self,
-        cx: &mut Cx,
         layout: vk::DescriptorSetLayout,
     ) -> anyhow::Result<vk::DescriptorSet> {
         if self.current_pool == vk::DescriptorPool::null() {
@@ -107,18 +106,17 @@ impl DescriptorAllocator {
             None,
         )?)
     }
+}
 
-    pub unsafe fn destroy(self, cx: &mut Cx) {
-        self.free_pools
-            .into_iter()
-            .chain(self.used_pools.into_iter())
-            .chain(std::iter::once(self.current_pool))
-            .for_each(|pool| {
-                cx.device.destroy_descriptor_pool(pool, None);
-            });
-
-        if self.current_pool != vk::DescriptorPool::null() {
-            cx.device.destroy_descriptor_pool(self.current_pool, None);
+impl Drop for DescriptorAllocator {
+    fn drop(&mut self) {
+        unsafe {
+            self.free_pools
+                .iter()
+                .chain(self.used_pools.iter())
+                .for_each(|pool| {
+                    self.device.destroy_descriptor_pool(*pool, None);
+                });
         }
     }
 }
@@ -201,11 +199,13 @@ impl DescriptorLayoutCache {
                 .unwrap()
         })
     }
+}
 
-    pub unsafe fn destroy(mut self) {
-        self.cache
-            .drain()
-            .for_each(|(_, layout)| self.device.destroy_descriptor_set_layout(layout, None));
+impl Drop for DescriptorLayoutCache {
+    fn drop(&mut self) {
+        self.cache.drain().for_each(|(_, layout)| unsafe {
+            self.device.destroy_descriptor_set_layout(layout, None)
+        });
     }
 }
 
@@ -286,7 +286,7 @@ impl DescriptorBuilder {
             &vk::DescriptorSetLayoutCreateInfo::builder().bindings(&self.bindings),
         );
 
-        let set = allocator.allocate(cx, layout)?;
+        let set = allocator.allocate(layout)?;
 
         for write in &mut self.writes {
             write.dst_set = set;

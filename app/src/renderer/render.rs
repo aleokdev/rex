@@ -6,6 +6,7 @@ use super::{
 };
 use ash::vk;
 
+/// Represents an in-flight render frame.
 pub struct Frame {
     pub present_semaphore: vk::Semaphore,
     pub render_semaphore: vk::Semaphore,
@@ -530,8 +531,8 @@ impl Renderer {
             cx.device.destroy_command_pool(frame.cmd_pool, None);
         });
 
-        self.ds_layout_cache.destroy();
-        self.ds_allocator.destroy(cx);
+        drop(self.ds_layout_cache);
+        drop(self.ds_allocator);
         cx.device
             .destroy_pipeline_layout(self.pipeline_layout, None);
         cx.device.destroy_pipeline(self.pipeline, None);

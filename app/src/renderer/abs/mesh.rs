@@ -1,7 +1,6 @@
 use super::{
-    buffer::{Buffer, BufferSlice},
-    cx,
-    memory::{stage, GpuMemory, MemoryUsage},
+    buffer::BufferSlice,
+    memory::{stage, GpuMemory},
     Cx,
 };
 use ash::vk;
