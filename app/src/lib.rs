@@ -49,13 +49,14 @@ pub fn run(width: u32, height: u32) -> anyhow::Result<()> {
 
         match event {
             Event::WindowEvent { event, .. } => match event {
-                WindowEvent::Resized(new_size) if false => unsafe {
+                WindowEvent::Resized(new_size) => unsafe {
                     app.cx.device.device_wait_idle().unwrap();
                     app.cx
                         .recreate_swapchain(new_size.width, new_size.height)
                         .unwrap();
                     app.renderer
-                        .resize(&mut app.cx, new_size.width, new_size.height);
+                        .resize(&mut app.cx, new_size.width, new_size.height)
+                        .unwrap();
                 },
                 WindowEvent::CloseRequested => {
                     *control_flow = ControlFlow::Exit;
