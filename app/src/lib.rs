@@ -1,6 +1,7 @@
 mod renderer;
 use renderer::{
-    abs, render,
+    abs,
+    render::{self, Renderer},
     world::{Camera, World},
 };
 use winit::{
@@ -37,12 +38,13 @@ impl App {
 
 pub fn run(width: u32, height: u32) -> anyhow::Result<()> {
     let event_loop = EventLoop::new();
-    let mut app = unsafe { App::new(&event_loop, width, height)? };
+    let mut application = Some(unsafe { App::new(&event_loop, width, height)? });
 
     let mut forward = 0.;
     let mut right = 0.;
     let mut last_mouse = glam::Vec2::ZERO;
     event_loop.run(move |event, _target, control_flow| {
+        let Some(app) = application.as_mut() else { return };
         *control_flow = ControlFlow::Poll;
 
         match event {
@@ -52,6 +54,8 @@ pub fn run(width: u32, height: u32) -> anyhow::Result<()> {
                     app.cx
                         .recreate_swapchain(new_size.width, new_size.height)
                         .unwrap();
+                    app.renderer
+                        .resize(&mut app.cx, new_size.width, new_size.height);
                 },
                 WindowEvent::CloseRequested => {
                     *control_flow = ControlFlow::Exit;
@@ -111,6 +115,7 @@ pub fn run(width: u32, height: u32) -> anyhow::Result<()> {
                 app.redraw().unwrap();
             },
             Event::LoopDestroyed => unsafe {
+                let mut app = application.take().unwrap();
                 app.renderer.destroy(&mut app.cx).unwrap();
             },
             _ => {}

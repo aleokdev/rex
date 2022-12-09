@@ -482,6 +482,7 @@ impl Renderer {
             .index
             .suballocate(&mut self.memory, std::mem::size_of::<[u32; 3]>() as u64)?;
 
+        // Upload epic triangular cube as an example for now
         self.cube.upload(
             cx,
             &mut frame.allocator,
@@ -506,7 +507,7 @@ impl Renderer {
         Ok(())
     }
 
-    pub unsafe fn destroy(&mut self, cx: &mut abs::Cx) -> anyhow::Result<()> {
+    pub unsafe fn destroy(mut self, cx: &mut abs::Cx) -> anyhow::Result<()> {
         cx.device.device_wait_idle().unwrap();
 
         self.deletion.drain(..).for_each(|f| f(cx));
@@ -523,6 +524,8 @@ impl Renderer {
             cx.device.destroy_command_pool(frame.cmd_pool, None);
         });
 
+        self.ds_layout_cache.destroy();
+        self.ds_allocator.destroy(cx);
         cx.device
             .destroy_pipeline_layout(self.pipeline_layout, None);
         cx.device.destroy_pipeline(self.pipeline, None);
