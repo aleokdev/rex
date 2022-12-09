@@ -1,7 +1,7 @@
 use std::ffi::CStr;
 
 use super::{
-    abs::{self},
+    abs::{self, memory::GpuMemory},
     world::World,
 };
 use ash::vk;
@@ -62,7 +62,7 @@ pub struct Renderer {
     pub pass: vk::RenderPass,
     pub framebuffers: Vec<vk::Framebuffer>,
 
-    pub cube: abs::mesh::GpuMesh,
+    pub cube: Option<abs::mesh::GpuMesh>,
     pub uniforms: abs::buffer::BufferSlice,
     pub uniform_set: vk::DescriptorSet,
 
@@ -238,11 +238,6 @@ impl Renderer {
             .create_graphics_pipelines(vk::PipelineCache::null(), &[*pipeline_info], None)
             .map_err(|(_, e)| e)?[0];
 
-        let cube = abs::mesh::GpuMesh {
-            vertices: abs::buffer::BufferSlice::null(),
-            indices: abs::buffer::BufferSlice::null(),
-        };
-
         Ok(Renderer {
             memory,
             ds_allocator,
@@ -258,7 +253,7 @@ impl Renderer {
             pass,
             framebuffers,
 
-            cube,
+            cube: None,
             uniforms,
             uniform_set,
 
@@ -388,7 +383,12 @@ impl Renderer {
         )?;
 
         if first {
-            self.setup(cx, &mut frame)?;
+            self.cube = Some(Self::setup_cube(
+                cx,
+                &mut self.arenas,
+                &mut self.memory,
+                &mut frame,
+            )?);
         }
 
         abs::memory::stage(
@@ -471,19 +471,25 @@ impl Renderer {
         Ok(())
     }
 
-    pub unsafe fn setup(&mut self, cx: &mut abs::Cx, frame: &mut Frame) -> anyhow::Result<()> {
-        self.cube.vertices = self.arenas.vertex.suballocate(
-            &mut self.memory,
+    unsafe fn setup_cube(
+        cx: &mut abs::Cx,
+        arenas: &mut Arenas,
+        memory: &mut GpuMemory,
+        frame: &mut Frame,
+    ) -> anyhow::Result<abs::mesh::GpuMesh> {
+        let vertices = arenas.vertex.suballocate(
+            memory,
             std::mem::size_of::<[abs::mesh::GpuVertex; 3]>() as u64,
         )?;
 
-        self.cube.indices = self
-            .arenas
+        let indices = arenas
             .index
-            .suballocate(&mut self.memory, std::mem::size_of::<[u32; 3]>() as u64)?;
+            .suballocate(memory, std::mem::size_of::<[u32; 3]>() as u64)?;
+
+        let mut cube = abs::mesh::GpuMesh { indices, vertices };
 
         // Upload epic triangular cube as an example for now
-        self.cube.upload(
+        cube.upload(
             cx,
             &mut frame.allocator,
             frame.cmd,
@@ -504,7 +510,7 @@ impl Renderer {
             &[0, 1, 2],
         )?;
 
-        Ok(())
+        Ok(cube)
     }
 
     pub unsafe fn destroy(mut self, cx: &mut abs::Cx) -> anyhow::Result<()> {
