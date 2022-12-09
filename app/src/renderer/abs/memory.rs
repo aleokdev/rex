@@ -143,6 +143,12 @@ impl MemoryType {
         self.allocate_block(device)?;
         self.allocate(device, size, alignment)
     }
+
+    pub unsafe fn destroy(self, device: &ash::Device) {
+        self.memory_blocks
+            .into_iter()
+            .for_each(|block| device.free_memory(block.raw, None));
+    }
 }
 
 pub struct GpuMemory {
@@ -433,6 +439,16 @@ impl GpuMemory {
             .ok_or_else(|| anyhow::anyhow!("out of range memory block index"))?
             .allocator
             .free(Some(&allocation))
+    }
+}
+
+impl Drop for GpuMemory {
+    fn drop(&mut self) {
+        self.linear_linear
+            .drain()
+            .chain(self.list_linear.drain())
+            .chain(self.images.drain())
+            .for_each(|(_, mem)| unsafe { mem.destroy(&self.device) });
     }
 }
 

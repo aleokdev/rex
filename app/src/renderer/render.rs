@@ -533,6 +533,7 @@ impl Renderer {
 
         drop(self.ds_layout_cache);
         drop(self.ds_allocator);
+        drop(self.memory);
         cx.device
             .destroy_pipeline_layout(self.pipeline_layout, None);
         cx.device.destroy_pipeline(self.pipeline, None);
