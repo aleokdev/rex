@@ -1,5 +1,5 @@
 use super::{
-    buffer::BufferSlice,
+    buffer::{Buffer, BufferSlice, OwnedBufferSlice},
     memory::{stage, GpuMemory},
     Cx,
 };
@@ -18,22 +18,22 @@ pub struct GpuVertex {
     pub normal: [f32; 3],
 }
 
-pub struct GpuMesh {
-    pub vertices: BufferSlice,
-    pub indices: BufferSlice,
+pub struct GpuMesh<'b> {
+    pub vertices: BufferSlice<'b>,
+    pub indices: BufferSlice<'b>,
 }
 
-impl GpuMesh {
+impl<'b> GpuMesh<'b> {
     pub unsafe fn upload(
         &mut self,
-        cx: &mut Cx,
+        cx: std::sync::Arc<Cx>,
         scratch_memory: &mut GpuMemory,
         cmd: vk::CommandBuffer,
         vertices: &[GpuVertex],
         indices: &[u32],
     ) -> anyhow::Result<()> {
-        stage(&cx.device, scratch_memory, cmd, vertices, &self.vertices)?;
-        stage(&cx.device, scratch_memory, cmd, indices, &self.indices)?;
+        stage(cx, scratch_memory, cmd, vertices, self.vertices)?;
+        stage(cx, scratch_memory, cmd, indices, self.indices)?;
         Ok(())
     }
 }

@@ -28,9 +28,9 @@ impl DescriptorAllocator {
         (vk::DescriptorType::INPUT_ATTACHMENT, 0.5),
     ];
 
-    pub fn new(cx: &mut Cx) -> Self {
+    pub fn new(device: &ash::Device) -> Self {
         DescriptorAllocator {
-            device: cx.device.clone(),
+            device: device.clone(),
             current_pool: vk::DescriptorPool::null(),
             free_pools: vec![],
             used_pools: vec![],
@@ -162,9 +162,9 @@ pub struct DescriptorLayoutCache {
 }
 
 impl DescriptorLayoutCache {
-    pub fn new(cx: &mut Cx) -> Self {
+    pub fn new(device: &ash::Device) -> Self {
         DescriptorLayoutCache {
-            device: cx.device.clone(),
+            device: device.clone(),
             cache: HashMap::new(),
         }
     }
@@ -278,7 +278,7 @@ impl DescriptorBuilder {
 
     pub unsafe fn build(
         &mut self,
-        cx: &mut Cx,
+        device: &ash::Device,
         allocator: &mut DescriptorAllocator,
         layout_cache: &mut DescriptorLayoutCache,
     ) -> anyhow::Result<(vk::DescriptorSet, vk::DescriptorSetLayout)> {
@@ -292,7 +292,7 @@ impl DescriptorBuilder {
             write.dst_set = set;
         }
 
-        cx.device.update_descriptor_sets(&self.writes, &[]);
+        device.update_descriptor_sets(&self.writes, &[]);
 
         Ok((set, layout))
     }

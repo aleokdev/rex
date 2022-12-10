@@ -14,13 +14,13 @@ pub struct Frame {
     pub cmd_pool: vk::CommandPool,
     pub cmd: vk::CommandBuffer,
     pub allocator: abs::memory::GpuMemory,
-    pub deletion: Vec<Box<dyn FnOnce(&mut abs::Cx)>>,
+    pub deletion: Vec<Box<dyn FnOnce(&std::sync::Arc<abs::Cx>)>>,
 
     pub counter: u64,
 }
 
 impl Frame {
-    pub unsafe fn new(cx: &mut abs::Cx) -> anyhow::Result<Self> {
+    pub unsafe fn new(cx: &std::sync::Arc<Cx>) -> anyhow::Result<Self> {
         let render_fence = cx.device.create_fence(
             &vk::FenceCreateInfo::builder().flags(vk::FenceCreateFlags::SIGNALED),
             None,
@@ -60,6 +60,8 @@ impl Frame {
 }
 
 pub struct Renderer {
+    cx: std::sync::Arc<Cx>,
+
     pub memory: abs::memory::GpuMemory,
     pub ds_allocator: abs::descriptor::DescriptorAllocator,
     pub ds_layout_cache: abs::descriptor::DescriptorLayoutCache,
@@ -75,21 +77,21 @@ pub struct Renderer {
     pub framebuffers: Vec<vk::Framebuffer>,
 
     pub cube: Option<abs::mesh::GpuMesh>,
-    pub uniforms: abs::buffer::BufferSlice,
+    pub uniforms: abs::buffer::OwnedBufferSlice,
     pub uniform_set: vk::DescriptorSet,
 
     pub frames: [Option<Frame>; Self::FRAME_OVERLAP],
-    pub deletion: Vec<Box<dyn FnOnce(&mut abs::Cx)>>,
+    pub deletion: Vec<Box<dyn FnOnce(std::sync::Arc<Cx>)>>,
 }
 
 impl Renderer {
     const FRAME_OVERLAP: usize = 2;
 
-    pub unsafe fn new(cx: &mut abs::Cx) -> anyhow::Result<Self> {
+    pub unsafe fn new(cx: std::sync::Arc<Cx>) -> anyhow::Result<Self> {
         let mut memory = abs::memory::GpuMemory::new(&cx.device, &cx.instance, cx.physical_device)?;
 
-        let mut ds_allocator = abs::descriptor::DescriptorAllocator::new(cx);
-        let mut ds_layout_cache = abs::descriptor::DescriptorLayoutCache::new(cx);
+        let mut ds_allocator = abs::descriptor::DescriptorAllocator::new(&cx.device);
+        let mut ds_layout_cache = abs::descriptor::DescriptorLayoutCache::new(&cx.device);
 
         let mut arenas = Arenas::new(
             &cx.instance
@@ -151,22 +153,23 @@ impl Renderer {
             None,
         )?;
 
-        let uniforms = arenas
-            .uniform
-            .suballocate(&mut memory, std::mem::size_of::<[f32; 16]>() as u64)?;
+        let uniforms =
+            arenas
+                .uniform
+                .suballocate(cx, &mut memory, std::mem::size_of::<[f32; 16]>() as u64)?;
 
         let (uniform_set, uniform_set_layout) = abs::descriptor::DescriptorBuilder::new()
             .bind_buffer(
                 0,
                 &[vk::DescriptorBufferInfo::builder()
-                    .buffer(uniforms.buffer.raw)
+                    .buffer(uniforms.buffer.raw())
                     .offset(uniforms.offset)
                     .range(std::mem::size_of::<[f32; 16]>() as u64)
                     .build()],
                 vk::DescriptorType::UNIFORM_BUFFER,
                 vk::ShaderStageFlags::VERTEX,
             )
-            .build(cx, &mut ds_allocator, &mut ds_layout_cache)?;
+            .build(&cx.device, &mut ds_allocator, &mut ds_layout_cache)?;
 
         let pipeline_layout = cx.device.create_pipeline_layout(
             &vk::PipelineLayoutCreateInfo::builder().set_layouts(&[uniform_set_layout]),
@@ -251,6 +254,9 @@ impl Renderer {
             .map_err(|(_, e)| e)?[0];
 
         Ok(Renderer {
+            frames: [Some(Frame::new(&cx)?), Some(Frame::new(&cx)?)],
+            cx,
+
             memory,
             ds_allocator,
             ds_layout_cache,
@@ -269,7 +275,6 @@ impl Renderer {
             uniforms,
             uniform_set,
 
-            frames: [Some(Frame::new(cx)?), Some(Frame::new(cx)?)],
             deletion: vec![],
         })
     }
@@ -314,7 +319,7 @@ impl Renderer {
             .collect()
     }
 
-    pub unsafe fn draw(&mut self, cx: &mut abs::Cx, world: &World) -> anyhow::Result<()> {
+    pub unsafe fn draw(&mut self, world: &World) -> anyhow::Result<()> {
         // - Get the next frame to draw onto:
         //      We have a few in-flight frames so the GPU doesn't stay still (And we don't need to
         //      wait too much CPU-side for queue submissions to happen).
@@ -359,10 +364,10 @@ impl Renderer {
         let mut frame = self.frames[self.frame as usize % self.frames.len()]
             .take()
             .unwrap();
-        frame.deletion.drain(..).for_each(|f| f(cx));
+        frame.deletion.drain(..).for_each(|f| f(&self.cx));
         frame.allocator.free_scratch()?;
 
-        cx.device.wait_for_fences(
+        self.cx.device.wait_for_fences(
             &[frame.render_fence],
             true,
             std::time::Duration::from_secs(1).as_nanos() as u64,
@@ -371,19 +376,20 @@ impl Renderer {
         frame.allocator.free_scratch()?;
 
         // See TODO at Frame::new for why we are resetting the cmdbuffer each frame
-        cx.device
+        self.cx
+            .device
             .reset_command_pool(frame.cmd_pool, vk::CommandPoolResetFlags::empty())?;
 
-        cx.device.reset_fences(&[frame.render_fence])?;
+        self.cx.device.reset_fences(&[frame.render_fence])?;
 
-        let (swapchain_img_index, _is_suboptimal) = cx.swapchain_loader.acquire_next_image(
-            cx.swapchain,
+        let (swapchain_img_index, _is_suboptimal) = self.cx.swapchain_loader.acquire_next_image(
+            self.cx.swapchain,
             std::time::Duration::from_secs(1).as_nanos() as u64,
             frame.present_semaphore,
             ash::vk::Fence::null(),
         )?;
 
-        cx.device.begin_command_buffer(
+        self.cx.device.begin_command_buffer(
             frame.cmd,
             &ash::vk::CommandBufferBeginInfo::builder()
                 .flags(ash::vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT),
@@ -391,7 +397,7 @@ impl Renderer {
 
         if first {
             self.cube = Some(Self::setup_cube(
-                cx,
+                self.cx,
                 &mut self.arenas,
                 &mut self.memory,
                 &mut frame,
@@ -399,16 +405,16 @@ impl Renderer {
         }
 
         abs::memory::stage(
-            &cx.device,
+            self.cx,
             &mut frame.allocator,
             frame.cmd,
             &(world.camera.proj() * world.camera.view()).to_cols_array(),
-            &self.uniforms,
+            self.uniforms.borrow(),
         )?;
 
-        abs::memory::stage_sync(&cx.device, frame.cmd);
+        abs::memory::stage_sync(&self.cx.device, frame.cmd);
 
-        cx.device.cmd_begin_render_pass(
+        self.cx.device.cmd_begin_render_pass(
             frame.cmd,
             &ash::vk::RenderPassBeginInfo::builder()
                 .clear_values(&[ash::vk::ClearValue {
@@ -419,8 +425,8 @@ impl Renderer {
                 .render_area(
                     ash::vk::Rect2D::builder()
                         .extent(ash::vk::Extent2D {
-                            width: cx.width,
-                            height: cx.height,
+                            width: self.cx.width,
+                            height: self.cx.height,
                         })
                         .build(),
                 )
@@ -429,13 +435,13 @@ impl Renderer {
             ash::vk::SubpassContents::INLINE,
         );
 
-        cx.device.cmd_bind_pipeline(
+        self.cx.device.cmd_bind_pipeline(
             frame.cmd,
             ash::vk::PipelineBindPoint::GRAPHICS,
             self.pipeline,
         );
 
-        cx.device.cmd_bind_descriptor_sets(
+        self.cx.device.cmd_bind_descriptor_sets(
             frame.cmd,
             vk::PipelineBindPoint::GRAPHICS,
             self.pipeline_layout,
@@ -444,10 +450,10 @@ impl Renderer {
             &[],
         );
 
-        cx.device.cmd_draw(frame.cmd, 3, 1, 0, 0);
+        self.cx.device.cmd_draw(frame.cmd, 3, 1, 0, 0);
 
-        cx.device.cmd_end_render_pass(frame.cmd);
-        cx.device.end_command_buffer(frame.cmd)?;
+        self.cx.device.cmd_end_render_pass(frame.cmd);
+        self.cx.device.end_command_buffer(frame.cmd)?;
 
         let wait_stage = &[ash::vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT];
         let wait_semaphores = &[frame.present_semaphore];
@@ -460,13 +466,14 @@ impl Renderer {
             .command_buffers(cmd_buffers)
             .build();
 
-        cx.device
-            .queue_submit(cx.render_queue.0, &[submit], frame.render_fence)?;
+        self.cx
+            .device
+            .queue_submit(self.cx.render_queue.0, &[submit], frame.render_fence)?;
 
-        cx.swapchain_loader.queue_present(
-            cx.render_queue.0,
+        self.cx.swapchain_loader.queue_present(
+            self.cx.render_queue.0,
             &ash::vk::PresentInfoKHR::builder()
-                .swapchains(&[cx.swapchain])
+                .swapchains(&[self.cx.swapchain])
                 .wait_semaphores(&[frame.render_semaphore])
                 .image_indices(&[swapchain_img_index]),
         )?;
@@ -478,20 +485,22 @@ impl Renderer {
         Ok(())
     }
 
-    unsafe fn setup_cube(
-        cx: &mut abs::Cx,
+    unsafe fn setup_cube<'b>(
+        cx: std::sync::Arc<Cx>,
         arenas: &mut Arenas,
-        memory: &mut GpuMemory,
+        memory: &'b mut GpuMemory,
         frame: &mut Frame,
-    ) -> anyhow::Result<abs::mesh::GpuMesh> {
+    ) -> anyhow::Result<abs::mesh::GpuMesh<'b>> {
         let vertices = arenas.vertex.suballocate(
+            cx,
             memory,
             std::mem::size_of::<[abs::mesh::GpuVertex; 3]>() as u64,
         )?;
 
-        let indices = arenas
-            .index
-            .suballocate(memory, std::mem::size_of::<[u32; 3]>() as u64)?;
+        let indices =
+            arenas
+                .index
+                .suballocate(cx, memory, std::mem::size_of::<[u32; 3]>() as u64)?;
 
         let mut cube = abs::mesh::GpuMesh { indices, vertices };
 

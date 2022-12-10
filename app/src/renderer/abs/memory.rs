@@ -2,6 +2,7 @@ use super::{
     buddy::BuddyAllocator,
     buffer::{Buffer, BufferSlice},
     image::Image,
+    Cx,
 };
 use ash::vk;
 use std::{collections::HashMap, ffi::c_void};
@@ -184,6 +185,7 @@ impl GpuMemory {
 
     pub unsafe fn allocate_scratch_buffer(
         &mut self,
+        cx: std::sync::Arc<Cx>,
         info: vk::BufferCreateInfo,
         usage: MemoryUsage,
         mapped: bool,
@@ -204,11 +206,7 @@ impl GpuMemory {
 
         self.scratch.push(buffer);
 
-        Ok(Buffer {
-            raw: buffer,
-            info,
-            allocation,
-        })
+        Ok(Buffer::from_raw_data(cx, buffer, info, allocation))
     }
 
     pub unsafe fn free_scratch(&mut self) -> anyhow::Result<()> {
@@ -285,6 +283,7 @@ impl GpuMemory {
 
     pub unsafe fn allocate_buffer(
         &mut self,
+        cx: std::sync::Arc<Cx>,
         info: vk::BufferCreateInfo,
         usage: MemoryUsage,
         mapped: bool,
@@ -303,11 +302,7 @@ impl GpuMemory {
         self.device
             .bind_buffer_memory(buffer, allocation.memory, allocation.offset)?;
 
-        Ok(Buffer {
-            raw: buffer,
-            info,
-            allocation,
-        })
+        Ok(Buffer::from_raw_data(cx, buffer, info, allocation))
     }
 
     pub unsafe fn free_buffer(&mut self, allocation: GpuAllocation) -> anyhow::Result<()> {
@@ -524,13 +519,14 @@ impl MemoryUsage {
 }
 
 pub unsafe fn stage<T: Clone>(
-    device: &ash::Device,
+    cx: std::sync::Arc<Cx>,
     scratch: &mut GpuMemory,
     cmd: vk::CommandBuffer,
     src: &[T],
-    dst: &BufferSlice,
+    dst: BufferSlice,
 ) -> anyhow::Result<()> {
     let staging = scratch.allocate_scratch_buffer(
+        cx,
         vk::BufferCreateInfo::builder()
             .size(std::mem::size_of::<T>() as u64 * src.len() as u64)
             .usage(vk::BufferUsageFlags::TRANSFER_SRC)
@@ -540,16 +536,16 @@ pub unsafe fn stage<T: Clone>(
         true,
     )?;
 
-    staging.allocation.write_mapped(src)?;
+    staging.allocation().write_mapped(src)?;
 
-    device.cmd_copy_buffer(
+    cx.device.cmd_copy_buffer(
         cmd,
-        staging.raw,
-        dst.buffer.raw,
+        staging.raw(),
+        dst.buffer.raw(),
         &[vk::BufferCopy::builder()
             .src_offset(0)
             .dst_offset(dst.offset)
-            .size(staging.info.size)
+            .size(staging.info().size)
             .build()],
     );
 

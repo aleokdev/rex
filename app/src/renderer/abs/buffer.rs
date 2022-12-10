@@ -1,3 +1,5 @@
+use std::borrow::Borrow;
+
 use super::memory::OutOfMemory;
 use super::{
     buddy::BuddyAllocator,
@@ -6,30 +8,69 @@ use super::{
 };
 use ash::vk;
 
-#[derive(Debug, Clone)]
+/// Represents a valid GPU memory buffer.
+#[derive(Clone)]
 pub struct Buffer {
-    pub raw: vk::Buffer,
-    pub info: vk::BufferCreateInfo,
-    pub allocation: GpuAllocation,
+    cx: std::sync::Arc<Cx>,
+
+    raw: vk::Buffer,
+    info: vk::BufferCreateInfo,
+    allocation: GpuAllocation,
 }
 
 impl Buffer {
-    pub fn null() -> Self {
-        Buffer {
-            raw: vk::Buffer::null(),
-            info: Default::default(),
-            allocation: GpuAllocation::null(),
+    /// ## Safety
+    /// The caller guarantees that the data passed is correct and valid, and no other object
+    /// possesses it.
+    pub unsafe fn from_raw_data(
+        cx: std::sync::Arc<Cx>,
+        raw: vk::Buffer,
+        info: vk::BufferCreateInfo,
+        allocation: GpuAllocation,
+    ) -> Self {
+        Self {
+            cx,
+            raw,
+            info,
+            allocation,
         }
     }
 
-    pub unsafe fn destroy(self, cx: &mut Cx, memory: &mut GpuMemory) -> anyhow::Result<()> {
-        // FIXME: This causes an assertion check in the buddy allocator when destroying the renderer
-        // (assert_eq!(self.block(index - 1).order_free, 0); in deallocate)
-        // So we skip freeing and just destroy the buffer altogether
+    /// ## Safety
+    /// The caller must not destroy the buffer given.
+    pub unsafe fn raw(&self) -> vk::Buffer {
+        self.raw
+    }
 
-        // memory.free_buffer(self.allocation)?;
-        cx.device.destroy_buffer(self.raw, None);
-        Ok(())
+    pub fn info(&self) -> vk::BufferCreateInfo {
+        self.info
+    }
+
+    pub fn allocation(&self) -> &GpuAllocation {
+        &self.allocation
+    }
+}
+
+impl Drop for Buffer {
+    fn drop(&mut self) {
+        unsafe {
+            // FIXME: This causes an assertion check in the buddy allocator when destroying the renderer
+            // (assert_eq!(self.block(index - 1).order_free, 0); in deallocate)
+            // So we skip freeing and just destroy the buffer altogether
+
+            // memory.free_buffer(self.allocation)?;
+            self.cx.device.destroy_buffer(self.raw, None);
+        }
+    }
+}
+
+impl std::fmt::Debug for Buffer {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Buffer")
+            .field("raw", &self.raw)
+            .field("info", &self.info)
+            .field("allocation", &self.allocation)
+            .finish()
     }
 }
 
@@ -81,6 +122,7 @@ impl BufferArena {
 
     pub unsafe fn suballocate(
         &mut self,
+        cx: std::sync::Arc<Cx>,
         memory: &mut GpuMemory,
         size: u64,
     ) -> anyhow::Result<BufferSlice> {
@@ -90,7 +132,7 @@ impl BufferArena {
             match allocator.allocate(buffer.allocation.size, size, self.alignment) {
                 Ok((offset, size)) => {
                     return Ok(BufferSlice {
-                        buffer: buffer.clone(),
+                        buffer,
                         offset,
                         size,
                     })
@@ -103,34 +145,34 @@ impl BufferArena {
         }
 
         self.buffers.push((
-            memory.allocate_buffer(self.info, self.usage, self.mapped)?,
+            memory.allocate_buffer(cx, self.info, self.usage, self.mapped)?,
             self.default_allocator.clone(),
         ));
 
-        self.suballocate(memory, size)
-    }
-
-    pub unsafe fn destroy(self, cx: &mut Cx, memory: &mut GpuMemory) -> anyhow::Result<()> {
-        for (buf, _) in self.buffers {
-            buf.destroy(cx, memory)?;
-        }
-        Ok(())
+        self.suballocate(cx, memory, size)
     }
 }
 
 #[derive(Debug, Clone)]
-pub struct BufferSlice {
+pub struct BufferSlice<'b> {
+    pub buffer: &'b Buffer,
+    pub offset: vk::DeviceAddress,
+    pub size: vk::DeviceSize,
+}
+
+#[derive(Debug, Clone)]
+pub struct OwnedBufferSlice {
     pub buffer: Buffer,
     pub offset: vk::DeviceAddress,
     pub size: vk::DeviceSize,
 }
 
-impl BufferSlice {
-    pub fn null() -> Self {
+impl OwnedBufferSlice {
+    pub fn borrow<'b>(&'b self) -> BufferSlice<'b> {
         BufferSlice {
-            buffer: Buffer::null(),
-            offset: 0,
-            size: 0,
+            buffer: &self.buffer,
+            offset: self.offset,
+            size: self.size,
         }
     }
 }
