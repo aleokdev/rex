@@ -1,5 +1,6 @@
-// https://github.com/Restioson/buddy-allocator-workshop
-
+/// A [buddy allocator], adapted from https://github.com/Restioson/buddy-allocator-workshop.
+///
+/// [buddy allocator]: https://en.wikipedia.org/wiki/Buddy_memory_allocation
 #[derive(Debug, Clone)]
 pub struct BuddyAllocator {
     tree: Vec<Block>,
@@ -12,7 +13,7 @@ pub struct BuddyAllocator {
 
 impl BuddyAllocator {
     pub fn new(level_count: u8, base_order: u8) -> Self {
-        let blocks_in_tree = BuddyAllocator::blocks_in_tree(level_count);
+        let blocks_in_tree = Self::blocks_in_tree(level_count);
         let max_order = level_count - 1;
         let max_order_size = base_order + max_order;
 
