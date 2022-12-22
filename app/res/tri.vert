@@ -10,7 +10,7 @@ layout(set = 0, binding = 0) uniform Uniforms {
 void main()
 {
 	vec4 pos = vec4(inPosition, 1);
-	pos = pos * m;
-	pos /= pos.w;
+	//pos = pos * m;
+	//pos /= pos.w;
 	gl_Position = pos;
 }

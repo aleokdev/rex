@@ -21,6 +21,7 @@ pub struct GpuVertex {
 pub struct GpuMesh {
     pub vertices: BufferSlice,
     pub indices: BufferSlice,
+    pub vertex_count: u32,
 }
 
 impl GpuMesh {

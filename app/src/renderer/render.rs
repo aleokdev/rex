@@ -1,5 +1,7 @@
 use std::ffi::CStr;
 
+use crate::renderer::abs::mesh::GpuVertex;
+
 use super::{
     abs::{self, memory::GpuMemory, Cx},
     world::World,
@@ -231,7 +233,25 @@ impl Renderer {
             .viewports(viewports)
             .scissors(scissors);
 
-        let vertex_input_state = vk::PipelineVertexInputStateCreateInfo::default();
+        let bindings = &[*vk::VertexInputBindingDescription::builder()
+            .binding(0)
+            .input_rate(vk::VertexInputRate::VERTEX)
+            .stride(std::mem::size_of::<GpuVertex>() as u32)];
+        let descriptions = &[
+            *vk::VertexInputAttributeDescription::builder()
+                .binding(0)
+                .location(0)
+                .format(vk::Format::R32G32B32A32_SFLOAT)
+                .offset(0),
+            *vk::VertexInputAttributeDescription::builder()
+                .binding(0)
+                .location(1)
+                .format(vk::Format::R32G32B32A32_SFLOAT)
+                .offset(12),
+        ];
+        let vertex_input_state = vk::PipelineVertexInputStateCreateInfo::builder()
+            .vertex_binding_descriptions(bindings)
+            .vertex_attribute_descriptions(descriptions);
 
         let pipeline_info = vk::GraphicsPipelineCreateInfo::builder()
             .stages(stages)
@@ -389,14 +409,9 @@ impl Renderer {
                 .flags(ash::vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT),
         )?;
 
-        if first {
-            self.cube = Some(Self::setup_cube(
-                cx,
-                &mut self.arenas,
-                &mut self.memory,
-                &mut frame,
-            )?);
-        }
+        let cube = self.cube.get_or_insert_with(|| {
+            Self::setup_cube(cx, &mut self.arenas, &mut self.memory, &mut frame).unwrap()
+        });
 
         abs::memory::stage(
             &cx.device,
@@ -444,7 +459,16 @@ impl Renderer {
             &[],
         );
 
-        cx.device.cmd_draw(frame.cmd, 3, 1, 0, 0);
+        cx.device.cmd_bind_index_buffer(
+            frame.cmd,
+            cube.indices.buffer.raw,
+            0,
+            vk::IndexType::UINT32,
+        );
+        cx.device
+            .cmd_bind_vertex_buffers(frame.cmd, 0, &[cube.vertices.buffer.raw], &[0]);
+
+        cx.device.cmd_draw(frame.cmd, cube.vertex_count, 1, 0, 0);
 
         cx.device.cmd_end_render_pass(frame.cmd);
         cx.device.end_command_buffer(frame.cmd)?;
@@ -493,16 +517,44 @@ impl Renderer {
             .index
             .suballocate(memory, std::mem::size_of::<[u32; 3]>() as u64)?;
 
-        let mut cube = abs::mesh::GpuMesh { indices, vertices };
+        let mut cube = abs::mesh::GpuMesh {
+            indices,
+            vertices,
+            vertex_count: 3,
+        };
 
-        // Upload epic triangular cube as an example for now
         cube.upload(
             cx,
             &mut frame.allocator,
             frame.cmd,
             &[
                 abs::mesh::GpuVertex {
-                    position: [0., 0., 0.],
+                    position: [1., 1., 0.],
+                    normal: [0., 0., 0.],
+                },
+                abs::mesh::GpuVertex {
+                    position: [-1., 1., 0.],
+                    normal: [0., 0., 0.],
+                },
+                abs::mesh::GpuVertex {
+                    position: [0., -1., 0.],
+                    normal: [0., 0., 0.],
+                },
+                /*
+                abs::mesh::GpuVertex {
+                    position: [0., 0., 1.],
+                    normal: [0., 0., 0.],
+                },
+                abs::mesh::GpuVertex {
+                    position: [1., 0., 1.],
+                    normal: [0., 0., 0.],
+                },
+                abs::mesh::GpuVertex {
+                    position: [0., 1., 1.],
+                    normal: [0., 0., 0.],
+                },
+                abs::mesh::GpuVertex {
+                    position: [1., 1., 1.],
                     normal: [0., 0., 0.],
                 },
                 abs::mesh::GpuVertex {
@@ -510,11 +562,28 @@ impl Renderer {
                     normal: [0., 0., 0.],
                 },
                 abs::mesh::GpuVertex {
-                    position: [0., 0., 0.],
+                    position: [1., 0., 0.],
                     normal: [0., 0., 0.],
                 },
+                abs::mesh::GpuVertex {
+                    position: [0., 1., 0.],
+                    normal: [0., 0., 0.],
+                },
+                abs::mesh::GpuVertex {
+                    position: [1., 1., 0.],
+                    normal: [0., 0., 0.],
+                },*/
             ],
-            &[0, 1, 2],
+            &[
+                0, 1,
+                2, /*
+                  2, 6, 7, 2, 3, 7, //Top
+                  0, 4, 5, 0, 1, 5, //Bottom
+                  0, 2, 6, 0, 4, 6, //Left
+                  1, 3, 7, 1, 5, 7, //Right
+                  0, 2, 3, 0, 1, 3, //Front
+                  4, 6, 7, 4, 5, 7, //Back */
+            ],
         )?;
 
         Ok(cube)
