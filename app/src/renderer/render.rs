@@ -374,8 +374,6 @@ impl Renderer {
         // [ Setup GPU work    -> Present image #1  ] wait for the next refresh cycle for a
         // [ Wait for fence    ][ Acquire image #2  ] new image to be available.
 
-        let first = self.frame == 0;
-
         let mut frame = self.frames[self.frame as usize % self.frames.len()]
             .take()
             .unwrap();
@@ -468,7 +466,8 @@ impl Renderer {
         cx.device
             .cmd_bind_vertex_buffers(frame.cmd, 0, &[cube.vertices.buffer.raw], &[0]);
 
-        cx.device.cmd_draw(frame.cmd, cube.vertex_count, 1, 0, 0);
+        cx.device
+            .cmd_draw_indexed(frame.cmd, cube.vertex_count, 1, 0, 0, 0);
 
         cx.device.cmd_end_render_pass(frame.cmd);
         cx.device.end_command_buffer(frame.cmd)?;
@@ -520,7 +519,7 @@ impl Renderer {
         let mut cube = abs::mesh::GpuMesh {
             indices,
             vertices,
-            vertex_count: 3,
+            vertex_count: 36,
         };
 
         cube.upload(
@@ -528,19 +527,6 @@ impl Renderer {
             &mut frame.allocator,
             frame.cmd,
             &[
-                abs::mesh::GpuVertex {
-                    position: [1., 1., 0.],
-                    normal: [0., 0., 0.],
-                },
-                abs::mesh::GpuVertex {
-                    position: [-1., 1., 0.],
-                    normal: [0., 0., 0.],
-                },
-                abs::mesh::GpuVertex {
-                    position: [0., -1., 0.],
-                    normal: [0., 0., 0.],
-                },
-                /*
                 abs::mesh::GpuVertex {
                     position: [0., 0., 1.],
                     normal: [0., 0., 0.],
@@ -572,17 +558,15 @@ impl Renderer {
                 abs::mesh::GpuVertex {
                     position: [1., 1., 0.],
                     normal: [0., 0., 0.],
-                },*/
+                },
             ],
             &[
-                0, 1,
-                2, /*
-                  2, 6, 7, 2, 3, 7, //Top
-                  0, 4, 5, 0, 1, 5, //Bottom
-                  0, 2, 6, 0, 4, 6, //Left
-                  1, 3, 7, 1, 5, 7, //Right
-                  0, 2, 3, 0, 1, 3, //Front
-                  4, 6, 7, 4, 5, 7, //Back */
+                2, 6, 7, 2, 3, 7, //Top
+                0, 4, 5, 0, 1, 5, //Bottom
+                0, 2, 6, 0, 4, 6, //Left
+                1, 3, 7, 1, 5, 7, //Right
+                0, 2, 3, 0, 1, 3, //Front
+                4, 6, 7, 4, 5, 7, //Back
             ],
         )?;
 

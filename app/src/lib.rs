@@ -1,12 +1,15 @@
 mod renderer;
+use glam::Vec3;
 use renderer::{
     abs,
     render::{self, Renderer},
     world::{Camera, World},
 };
 use winit::{
+    dpi::{PhysicalPosition, PhysicalSize},
     event::{Event, WindowEvent},
     event_loop::{ControlFlow, EventLoop},
+    window::CursorGrabMode,
 };
 
 struct App {
@@ -24,6 +27,9 @@ impl App {
             cube: glam::Vec3::ZERO,
         };
 
+        cx.window.set_cursor_grab(CursorGrabMode::Confined)?;
+        cx.window.set_cursor_visible(false);
+
         Ok(App {
             cx,
             renderer,
@@ -40,12 +46,18 @@ pub fn run(width: u32, height: u32) -> anyhow::Result<()> {
     let event_loop = EventLoop::new();
     let mut application = Some(unsafe { App::new(&event_loop, width, height)? });
 
-    let mut forward = 0.;
-    let mut right = 0.;
     let mut last_mouse = glam::Vec2::ZERO;
+    let mut last_time = std::time::Instant::now();
+    let mut movement_keys_pressed = [false; 6];
+    let mut sprint_key_pressed = false;
     event_loop.run(move |event, _target, control_flow| {
         let Some(app) = application.as_mut() else { return };
         *control_flow = ControlFlow::Poll;
+
+        let now_time = std::time::Instant::now();
+        let delta = now_time - last_time;
+        let delta_s = delta.as_secs_f32();
+        const SPEED: f32 = 10.;
 
         match event {
             Event::WindowEvent { event, .. } => match event {
@@ -66,53 +78,104 @@ pub fn run(width: u32, height: u32) -> anyhow::Result<()> {
                         (
                             Some(winit::event::VirtualKeyCode::W),
                             winit::event::ElementState::Pressed,
-                        ) => forward += 1.,
+                        ) => movement_keys_pressed[0] = true,
                         (
                             Some(winit::event::VirtualKeyCode::W),
                             winit::event::ElementState::Released,
-                        ) => forward -= 1.,
+                        ) => movement_keys_pressed[0] = false,
                         (
                             Some(winit::event::VirtualKeyCode::S),
                             winit::event::ElementState::Pressed,
-                        ) => forward -= 1.,
+                        ) => movement_keys_pressed[1] = true,
                         (
                             Some(winit::event::VirtualKeyCode::S),
                             winit::event::ElementState::Released,
-                        ) => forward += 1.,
+                        ) => movement_keys_pressed[1] = false,
                         (
                             Some(winit::event::VirtualKeyCode::D),
                             winit::event::ElementState::Pressed,
-                        ) => right += 1.,
+                        ) => movement_keys_pressed[2] = true,
                         (
                             Some(winit::event::VirtualKeyCode::D),
                             winit::event::ElementState::Released,
-                        ) => right -= 1.,
+                        ) => movement_keys_pressed[2] = false,
                         (
                             Some(winit::event::VirtualKeyCode::A),
                             winit::event::ElementState::Pressed,
-                        ) => right -= 1.,
+                        ) => movement_keys_pressed[3] = true,
                         (
                             Some(winit::event::VirtualKeyCode::A),
                             winit::event::ElementState::Released,
-                        ) => right += 1.,
+                        ) => movement_keys_pressed[3] = false,
+                        (
+                            Some(winit::event::VirtualKeyCode::Space),
+                            winit::event::ElementState::Pressed,
+                        ) => movement_keys_pressed[4] = true,
+                        (
+                            Some(winit::event::VirtualKeyCode::Space),
+                            winit::event::ElementState::Released,
+                        ) => movement_keys_pressed[4] = false,
+                        (
+                            Some(winit::event::VirtualKeyCode::LShift),
+                            winit::event::ElementState::Pressed,
+                        ) => movement_keys_pressed[5] = true,
+                        (
+                            Some(winit::event::VirtualKeyCode::LShift),
+                            winit::event::ElementState::Released,
+                        ) => movement_keys_pressed[5] = false,
+                        (
+                            Some(winit::event::VirtualKeyCode::LControl),
+                            winit::event::ElementState::Pressed,
+                        ) => sprint_key_pressed = true,
+                        (
+                            Some(winit::event::VirtualKeyCode::LControl),
+                            winit::event::ElementState::Released,
+                        ) => sprint_key_pressed = false,
                         _ => {}
                     }
                 }
-                WindowEvent::CursorMoved { position, .. } => {
-                    let pos = glam::Vec2::new(position.x as f32, position.y as f32);
-                    if last_mouse == glam::Vec2::ZERO {
-                        last_mouse = pos;
-                    }
-                    let delta = pos - last_mouse;
-                    last_mouse = pos;
-                    app.world.camera.look(delta.x, delta.y);
+                WindowEvent::CursorMoved { .. } => {
+                    let PhysicalSize { width, height } = app.cx.window.inner_size();
+
+                    drop(
+                        app.cx
+                            .window
+                            .set_cursor_position(PhysicalPosition::new(width / 2, height / 2)),
+                    );
                 }
                 _ => {}
             },
+            Event::DeviceEvent { event, .. } => match event {
+                winit::event::DeviceEvent::MouseMotion { delta } => {
+                    const LOOK_SENSITIVITY: f32 = 0.001;
+                    app.world.camera.look(
+                        -delta.0 as f32 * LOOK_SENSITIVITY,
+                        -delta.1 as f32 * LOOK_SENSITIVITY,
+                    );
+                }
+                _ => (),
+            },
             Event::MainEventsCleared => app.cx.window.request_redraw(),
             Event::RedrawRequested(_) => unsafe {
-                app.world.camera.move_forward(forward);
-                app.world.camera.move_right(right);
+                let mut movement = Vec3::ZERO;
+                movement.z += if movement_keys_pressed[0] { 1. } else { 0. };
+                movement.z -= if movement_keys_pressed[1] { 1. } else { 0. };
+                movement.x -= if movement_keys_pressed[2] { 1. } else { 0. };
+                movement.x += if movement_keys_pressed[3] { 1. } else { 0. };
+                movement.y += if movement_keys_pressed[4] { 1. } else { 0. };
+                movement.y -= if movement_keys_pressed[5] { 1. } else { 0. };
+                if sprint_key_pressed {
+                    movement *= 10.;
+                }
+                log::info!(
+                    "{}, forward {}, up {}",
+                    app.world.camera.position(),
+                    app.world.camera.forward(),
+                    app.world.camera.up()
+                );
+                app.world
+                    .camera
+                    .move_local_coords(movement * SPEED * delta_s);
                 app.redraw().unwrap();
             },
             Event::LoopDestroyed => unsafe {
@@ -121,5 +184,7 @@ pub fn run(width: u32, height: u32) -> anyhow::Result<()> {
             },
             _ => {}
         }
+
+        last_time = now_time;
     })
 }
