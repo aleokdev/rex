@@ -71,78 +71,46 @@ pub fn run(width: u32, height: u32) -> anyhow::Result<()> {
                         .resize(&mut app.cx, new_size.width, new_size.height)
                         .unwrap();
                 },
-                WindowEvent::CloseRequested => {
-                    *control_flow = ControlFlow::Exit;
-                }
-                WindowEvent::KeyboardInput { input, .. } => {
-                    match (input.virtual_keycode, input.state) {
-                        (
-                            Some(winit::event::VirtualKeyCode::W),
-                            winit::event::ElementState::Pressed,
-                        ) => movement_keys_pressed[0] = true,
-                        (
-                            Some(winit::event::VirtualKeyCode::W),
-                            winit::event::ElementState::Released,
-                        ) => movement_keys_pressed[0] = false,
-                        (
-                            Some(winit::event::VirtualKeyCode::S),
-                            winit::event::ElementState::Pressed,
-                        ) => movement_keys_pressed[1] = true,
-                        (
-                            Some(winit::event::VirtualKeyCode::S),
-                            winit::event::ElementState::Released,
-                        ) => movement_keys_pressed[1] = false,
-                        (
-                            Some(winit::event::VirtualKeyCode::D),
-                            winit::event::ElementState::Pressed,
-                        ) => movement_keys_pressed[2] = true,
-                        (
-                            Some(winit::event::VirtualKeyCode::D),
-                            winit::event::ElementState::Released,
-                        ) => movement_keys_pressed[2] = false,
-                        (
-                            Some(winit::event::VirtualKeyCode::A),
-                            winit::event::ElementState::Pressed,
-                        ) => movement_keys_pressed[3] = true,
-                        (
-                            Some(winit::event::VirtualKeyCode::A),
-                            winit::event::ElementState::Released,
-                        ) => movement_keys_pressed[3] = false,
-                        (
-                            Some(winit::event::VirtualKeyCode::Space),
-                            winit::event::ElementState::Pressed,
-                        ) => movement_keys_pressed[4] = true,
-                        (
-                            Some(winit::event::VirtualKeyCode::Space),
-                            winit::event::ElementState::Released,
-                        ) => movement_keys_pressed[4] = false,
-                        (
-                            Some(winit::event::VirtualKeyCode::LShift),
-                            winit::event::ElementState::Pressed,
-                        ) => movement_keys_pressed[5] = true,
-                        (
-                            Some(winit::event::VirtualKeyCode::LShift),
-                            winit::event::ElementState::Released,
-                        ) => movement_keys_pressed[5] = false,
-                        (
-                            Some(winit::event::VirtualKeyCode::LControl),
-                            winit::event::ElementState::Pressed,
-                        ) => sprint_key_pressed = true,
-                        (
-                            Some(winit::event::VirtualKeyCode::LControl),
-                            winit::event::ElementState::Released,
-                        ) => sprint_key_pressed = false,
-                        (
-                            Some(winit::event::VirtualKeyCode::Escape),
-                            winit::event::ElementState::Pressed,
-                        ) => {
-                            focused = false;
-                            app.cx.window.set_cursor_visible(true);
-                            drop(app.cx.window.set_cursor_grab(CursorGrabMode::None));
-                        }
-                        _ => {}
+                WindowEvent::KeyboardInput {
+                    input:
+                        winit::event::KeyboardInput {
+                            virtual_keycode: Some(keycode),
+                            state,
+                            ..
+                        },
+                    ..
+                } => match keycode {
+                    winit::event::VirtualKeyCode::W => {
+                        movement_keys_pressed[0] = state == winit::event::ElementState::Pressed
                     }
-                }
+                    winit::event::VirtualKeyCode::S => {
+                        movement_keys_pressed[1] = state == winit::event::ElementState::Pressed
+                    }
+                    winit::event::VirtualKeyCode::D => {
+                        movement_keys_pressed[2] = state == winit::event::ElementState::Pressed
+                    }
+                    winit::event::VirtualKeyCode::A => {
+                        movement_keys_pressed[3] = state == winit::event::ElementState::Pressed
+                    }
+                    winit::event::VirtualKeyCode::Space => {
+                        movement_keys_pressed[4] = state == winit::event::ElementState::Pressed
+                    }
+                    winit::event::VirtualKeyCode::LShift => {
+                        movement_keys_pressed[5] = state == winit::event::ElementState::Pressed
+                    }
+                    winit::event::VirtualKeyCode::LControl => {
+                        sprint_key_pressed = state == winit::event::ElementState::Pressed
+                    }
+
+                    winit::event::VirtualKeyCode::Escape
+                        if state == winit::event::ElementState::Pressed =>
+                    {
+                        focused = false;
+                        app.cx.window.set_cursor_visible(true);
+                        drop(app.cx.window.set_cursor_grab(CursorGrabMode::None));
+                    }
+                    _ => {}
+                },
                 WindowEvent::CursorMoved { .. } if focused => {
                     let PhysicalSize { width, height } = app.cx.window.inner_size();
 
@@ -159,6 +127,9 @@ pub fn run(width: u32, height: u32) -> anyhow::Result<()> {
                     focused = true;
                     app.cx.window.set_cursor_visible(false);
                     drop(app.cx.window.set_cursor_grab(CursorGrabMode::Confined));
+                }
+                WindowEvent::CloseRequested => {
+                    *control_flow = ControlFlow::Exit;
                 }
                 _ => {}
             },
