@@ -1,16 +1,18 @@
 mod renderer;
+mod world;
+
 use glam::Vec3;
 use renderer::{
     abs,
-    render::{self, Renderer},
-    world::{Camera, World},
+    render::{self},
 };
 use winit::{
     dpi::{PhysicalPosition, PhysicalSize},
-    event::{Event, WindowEvent},
+    event::{ElementState, Event, WindowEvent},
     event_loop::{ControlFlow, EventLoop},
     window::CursorGrabMode,
 };
+use world::{Camera, World};
 
 struct App {
     pub cx: abs::Cx,
@@ -23,8 +25,7 @@ impl App {
         let mut cx = abs::Cx::new(event_loop, width, height)?;
         let renderer = render::Renderer::new(&mut cx)?;
         let world = World {
-            camera: Camera::new(&cx),
-            cube: glam::Vec3::ZERO,
+            camera: Camera::new(cx.width as f32 / cx.height as f32),
         };
 
         cx.window.set_cursor_grab(CursorGrabMode::Confined)?;
@@ -46,10 +47,10 @@ pub fn run(width: u32, height: u32) -> anyhow::Result<()> {
     let event_loop = EventLoop::new();
     let mut application = Some(unsafe { App::new(&event_loop, width, height)? });
 
-    let mut last_mouse = glam::Vec2::ZERO;
     let mut last_time = std::time::Instant::now();
     let mut movement_keys_pressed = [false; 6];
     let mut sprint_key_pressed = false;
+    let mut focused = true;
     event_loop.run(move |event, _target, control_flow| {
         let Some(app) = application.as_mut() else { return };
         *control_flow = ControlFlow::Poll;
@@ -57,7 +58,7 @@ pub fn run(width: u32, height: u32) -> anyhow::Result<()> {
         let now_time = std::time::Instant::now();
         let delta = now_time - last_time;
         let delta_s = delta.as_secs_f32();
-        const SPEED: f32 = 10.;
+        const SPEED: f32 = 100.;
 
         match event {
             Event::WindowEvent { event, .. } => match event {
@@ -131,10 +132,18 @@ pub fn run(width: u32, height: u32) -> anyhow::Result<()> {
                             Some(winit::event::VirtualKeyCode::LControl),
                             winit::event::ElementState::Released,
                         ) => sprint_key_pressed = false,
+                        (
+                            Some(winit::event::VirtualKeyCode::Escape),
+                            winit::event::ElementState::Pressed,
+                        ) => {
+                            focused = false;
+                            app.cx.window.set_cursor_visible(true);
+                            drop(app.cx.window.set_cursor_grab(CursorGrabMode::None));
+                        }
                         _ => {}
                     }
                 }
-                WindowEvent::CursorMoved { .. } => {
+                WindowEvent::CursorMoved { .. } if focused => {
                     let PhysicalSize { width, height } = app.cx.window.inner_size();
 
                     drop(
@@ -143,9 +152,17 @@ pub fn run(width: u32, height: u32) -> anyhow::Result<()> {
                             .set_cursor_position(PhysicalPosition::new(width / 2, height / 2)),
                     );
                 }
+                WindowEvent::MouseInput {
+                    state: ElementState::Pressed,
+                    ..
+                } => {
+                    focused = true;
+                    app.cx.window.set_cursor_visible(false);
+                    drop(app.cx.window.set_cursor_grab(CursorGrabMode::Confined));
+                }
                 _ => {}
             },
-            Event::DeviceEvent { event, .. } => match event {
+            Event::DeviceEvent { event, .. } if focused => match event {
                 winit::event::DeviceEvent::MouseMotion { delta } => {
                     const LOOK_SENSITIVITY: f32 = 0.001;
                     app.world.camera.look(

@@ -1,7 +1,5 @@
 use glam::{Mat4, Vec3, Vec4};
 
-use super::abs;
-
 pub struct Camera {
     near: f32,
     far: f32,
@@ -15,18 +13,20 @@ pub struct Camera {
     /// Camera rotation around the Y axis, in radians.
     /// A yaw of zero corresponds to looking in the +X axis direction.
     yaw: f32,
-    /// Camera rotation around the X axis, in radians
+    /// Camera rotation around the X axis, in radians.
     pitch: f32,
 }
 
 impl Camera {
     const PITCH_ANGLE_LIMIT: f32 = std::f32::consts::FRAC_PI_2 - 0.1;
+    /// A matrix that negates the Y axis (i.e. If up was previously -Y, by doing NEGATE_Y_MATRIX * PV we'll obtain up = +Y).
+    const NEGATE_Y_MATRIX: Mat4 = Mat4::from_cols(Vec4::X, Vec4::NEG_Y, Vec4::Z, Vec4::W);
 
-    pub fn new(cx: &abs::Cx) -> Self {
+    pub fn new(aspect_ratio: f32) -> Self {
         Camera {
             near: 0.1,
             far: 300.,
-            aspect: cx.width as f32 / cx.height as f32,
+            aspect: aspect_ratio,
             fovy: 60.0f32.to_radians(),
 
             position: glam::Vec3::ZERO,
@@ -39,7 +39,7 @@ impl Camera {
     }
 
     pub fn view(&self) -> glam::Mat4 {
-        Mat4::from_cols(Vec4::X, Vec4::NEG_Y, Vec4::Z, Vec4::W)
+        Self::NEGATE_Y_MATRIX
             * glam::Mat4::look_at_lh(self.position, self.position + self.forward, self.up)
     }
 
@@ -79,9 +79,4 @@ impl Camera {
     pub fn up(&self) -> Vec3 {
         self.up
     }
-}
-
-pub struct World {
-    pub camera: Camera,
-    pub cube: glam::Vec3,
 }

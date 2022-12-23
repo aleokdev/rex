@@ -1,11 +1,8 @@
 use std::ffi::CStr;
 
-use crate::renderer::abs::mesh::GpuVertex;
+use crate::{renderer::abs::mesh::GpuVertex, world::World};
 
-use super::{
-    abs::{self, memory::GpuMemory, Cx},
-    world::World,
-};
+use super::abs::{self, memory::GpuMemory, Cx};
 use ash::vk;
 
 /// Represents an in-flight render frame.
@@ -233,25 +230,8 @@ impl Renderer {
             .viewports(viewports)
             .scissors(scissors);
 
-        let bindings = &[*vk::VertexInputBindingDescription::builder()
-            .binding(0)
-            .input_rate(vk::VertexInputRate::VERTEX)
-            .stride(std::mem::size_of::<GpuVertex>() as u32)];
-        let descriptions = &[
-            *vk::VertexInputAttributeDescription::builder()
-                .binding(0)
-                .location(0)
-                .format(vk::Format::R32G32B32A32_SFLOAT)
-                .offset(0),
-            *vk::VertexInputAttributeDescription::builder()
-                .binding(0)
-                .location(1)
-                .format(vk::Format::R32G32B32A32_SFLOAT)
-                .offset(12),
-        ];
-        let vertex_input_state = vk::PipelineVertexInputStateCreateInfo::builder()
-            .vertex_binding_descriptions(bindings)
-            .vertex_attribute_descriptions(descriptions);
+        let vertex_input_state = GpuVertex::description();
+        let vertex_input_state_raw = vertex_input_state.raw();
 
         let pipeline_info = vk::GraphicsPipelineCreateInfo::builder()
             .stages(stages)
@@ -263,7 +243,7 @@ impl Renderer {
             .layout(pipeline_layout)
             .color_blend_state(&color_blend_state)
             .viewport_state(&viewport_state)
-            .vertex_input_state(&vertex_input_state);
+            .vertex_input_state(&*vertex_input_state_raw);
 
         let pipeline = cx
             .device
