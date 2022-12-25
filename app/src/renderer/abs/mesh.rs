@@ -1,6 +1,6 @@
 use super::{
     buffer::BufferSlice,
-    memory::{stage, GpuMemory},
+    memory::{cmd_stage, GpuMemory},
     Cx,
 };
 use ash::vk;
@@ -71,8 +71,8 @@ impl GpuMesh {
         vertices: &[GpuVertex],
         indices: &[u32],
     ) -> anyhow::Result<()> {
-        stage(&cx.device, scratch_memory, cmd, vertices, &self.vertices)?;
-        stage(&cx.device, scratch_memory, cmd, indices, &self.indices)?;
+        cmd_stage(&cx.device, scratch_memory, cmd, vertices, &self.vertices)?;
+        cmd_stage(&cx.device, scratch_memory, cmd, indices, &self.indices)?;
         Ok(())
     }
 }

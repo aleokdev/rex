@@ -523,7 +523,7 @@ impl MemoryUsage {
     }
 }
 
-pub unsafe fn stage<T: Clone>(
+pub unsafe fn cmd_stage<T: Clone>(
     device: &ash::Device,
     scratch: &mut GpuMemory,
     cmd: vk::CommandBuffer,
@@ -556,7 +556,7 @@ pub unsafe fn stage<T: Clone>(
     Ok(())
 }
 
-pub unsafe fn stage_sync(device: &ash::Device, cmd: vk::CommandBuffer) {
+pub unsafe fn cmd_stage_sync(device: &ash::Device, cmd: vk::CommandBuffer) {
     device.cmd_pipeline_barrier(
         cmd,
         vk::PipelineStageFlags::TRANSFER,

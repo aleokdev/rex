@@ -315,65 +315,45 @@ impl Renderer {
     }
 
     pub unsafe fn draw(&mut self, cx: &mut abs::Cx, world: &World) -> anyhow::Result<()> {
-        // - Get the next frame to draw onto:
+        // Get the next frame to draw onto:
         //      We have a few in-flight frames so the GPU doesn't stay still (And we don't need to
         //      wait too much CPU-side for queue submissions to happen).
-        // - Wait for the frame render queue fence:
-        //      We only have command buffer per frame so we need to wait for the previous one before
-        //      submitting again, so we can reset it and use it once again.
-        // - Reset the frame command buffer so we can reuse it:
-        //      Technically we shouldn't do this, and we should have a couple command buffers to use
-        //      before resetting them all (Resetting command buffers individually is a bit slower
-        //      than resetting the entire pool)
-        // https://arm-software.github.io/vulkan_best_practice_for_mobile_developers/samples/performance/command_buffer_usage/command_buffer_usage_tutorial.html#resetting-individual-command-buffers
-        // - Obtain the next image we should be drawing onto:
-        //      Since we're using a swapchain, the driver should tell us which image of the
-        //      swapchain we should be drawing onto; We can't draw directly onto the window.
-        // - Record commands to the buffer:
-        //      We now are ready to tell the GPU what to do.
-        //      - Begin a render pass:
-        //          We clear the whole frame with black.
-        //      - Bind our pipeline:
-        //          We tell the GPU to configure itself for what's coming...
-        //      - Draw:
-        //          We draw our mesh having set the pipeline first.
-        //      - End the render pass
-        // - Submit the command buffer to the queue:
-        //      We set it to take place after the image acquisition has been finalized.
-        //      This operation will take a while, so we set it to open our render queue fence
-        //      once it is complete.
-        // - Present the frame drawn:
-        //      We adjust this operation to take place after the submission has finished.
-        //
-        // And thus, our timeline will look something like this:
-        // [        CPU        ][        GPU        ]
-        // [ Setup GPU work    -> Wait for work     ]
-        // [ Wait for fence    ][ Acquire image #1  ] Note: The image acquisition may stall!
-        // [ Wait for fence    ][ Execute commands  ] After all the images in the swapchain
-        // [ Wait for fence    <- Signal fence      ] have been written the GPU will need to
-        // [ Setup GPU work    -> Present image #1  ] wait for the next refresh cycle for a
-        // [ Wait for fence    ][ Acquire image #2  ] new image to be available.
-
         let mut frame = self.frames[self.frame as usize % self.frames.len()]
             .take()
             .unwrap();
+
+        // Process the deletion queue for this frame.
         frame.deletion.drain(..).for_each(|f| f(cx));
+
+        // Free all scratch memory, since it's only used for uploading to the GPU.
         frame.allocator.free_scratch()?;
 
+        // Wait for the frame render queue fence:
+        //      We only have command buffer per frame so we need to wait for the previous one before
+        //      submitting again, so we can reset it and use it once again.
         cx.device.wait_for_fences(
             &[frame.render_fence],
             true,
             std::time::Duration::from_secs(1).as_nanos() as u64,
         )?;
 
+        // Reset the render fence:
+        //      We have already waited for it, so we reset it preparing it for this next upload
+        cx.device.reset_fences(&[frame.render_fence])?;
+
         frame.allocator.free_scratch()?;
 
-        // See TODO at Frame::new for why we are resetting the cmdbuffer each frame
+        // Reset the frame command buffer so we can reuse it:
+        //      Technically we shouldn't do this, and we should have a couple command buffers to use
+        //      before resetting them all (Resetting command buffers individually is a bit slower
+        //      than resetting the entire pool)
+        // https://arm-software.github.io/vulkan_best_practice_for_mobile_developers/samples/performance/command_buffer_usage/command_buffer_usage_tutorial.html#resetting-individual-command-buffers
         cx.device
             .reset_command_pool(frame.cmd_pool, vk::CommandPoolResetFlags::empty())?;
 
-        cx.device.reset_fences(&[frame.render_fence])?;
-
+        // Obtain the next image we should be drawing onto:
+        //      We're using a swapchain, so the driver should tell us which image of the
+        //      swapchain we should be drawing onto; We can't draw directly onto the window.
         let (swapchain_img_index, _is_suboptimal) = cx.swapchain_loader.acquire_next_image(
             cx.swapchain,
             std::time::Duration::from_secs(1).as_nanos() as u64,
@@ -381,17 +361,21 @@ impl Renderer {
             ash::vk::Fence::null(),
         )?;
 
+        // Start recording commands to the command buffer:
+        //      We now are ready to tell the GPU what to do.
         cx.device.begin_command_buffer(
             frame.cmd,
             &ash::vk::CommandBufferBeginInfo::builder()
                 .flags(ash::vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT),
         )?;
 
+        // Upload the cube before rendering if we haven't already.
         let cube = self.cube.get_or_insert_with(|| {
             Self::setup_cube(cx, &mut self.arenas, &mut self.memory, &mut frame).unwrap()
         });
 
-        abs::memory::stage(
+        // Upload the camera uniform PV matrix for this frame.
+        abs::memory::cmd_stage(
             &cx.device,
             &mut frame.allocator,
             frame.cmd,
@@ -399,8 +383,11 @@ impl Renderer {
             &self.uniforms,
         )?;
 
-        abs::memory::stage_sync(&cx.device, frame.cmd);
+        // Insert a memory barrier to wait until the cube mesh and camera uniform have been uploaded.
+        abs::memory::cmd_stage_sync(&cx.device, frame.cmd);
 
+        // Begin a render pass:
+        //      We clear the whole frame with black.
         cx.device.cmd_begin_render_pass(
             frame.cmd,
             &ash::vk::RenderPassBeginInfo::builder()
@@ -422,12 +409,15 @@ impl Renderer {
             ash::vk::SubpassContents::INLINE,
         );
 
+        // Bind our pipeline:
+        //      We tell the GPU to configure its layout for what's coming...
         cx.device.cmd_bind_pipeline(
             frame.cmd,
             ash::vk::PipelineBindPoint::GRAPHICS,
             self.pipeline,
         );
 
+        // Bind the camera uniform descriptor set and cube vertex/index buffers.
         cx.device.cmd_bind_descriptor_sets(
             frame.cmd,
             vk::PipelineBindPoint::GRAPHICS,
@@ -446,6 +436,7 @@ impl Renderer {
         cx.device
             .cmd_bind_vertex_buffers(frame.cmd, 0, &[cube.vertices.buffer.raw], &[0]);
 
+        // Draw the mesh taking the index buffer into account.
         cx.device
             .cmd_draw_indexed(frame.cmd, cube.vertex_count, 1, 0, 0, 0);
 
@@ -463,9 +454,15 @@ impl Renderer {
             .command_buffers(cmd_buffers)
             .build();
 
+        // Submit the command buffer to the queue:
+        //      We set it to take place after the image acquisition has been finalized.
+        //      This operation will take a while, so we set it to open our render queue fence
+        //      once it is complete.
         cx.device
             .queue_submit(cx.render_queue.0, &[submit], frame.render_fence)?;
 
+        // Present the frame drawn:
+        //      We adjust this operation to take place after the submission has finished.
         cx.swapchain_loader.queue_present(
             cx.render_queue.0,
             &ash::vk::PresentInfoKHR::builder()
