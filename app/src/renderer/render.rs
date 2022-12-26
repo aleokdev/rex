@@ -84,8 +84,6 @@ impl Renderer {
     const FRAME_OVERLAP: usize = 2;
 
     pub unsafe fn new(cx: &mut abs::Cx) -> anyhow::Result<Self> {
-        let mut memory = abs::memory::GpuMemory::new(&cx.device, &cx.instance, cx.physical_device)?;
-
         let mut ds_allocator = abs::descriptor::DescriptorAllocator::new(cx);
         let mut ds_layout_cache = abs::descriptor::DescriptorLayoutCache::new(cx);
 
@@ -168,7 +166,7 @@ impl Renderer {
 
         let uniforms = arenas
             .uniform
-            .suballocate(&mut memory, std::mem::size_of::<[f32; 16]>() as u64)?;
+            .suballocate(&mut cx.memory, std::mem::size_of::<[f32; 16]>() as u64)?;
 
         let (uniform_set, uniform_set_layout) = abs::descriptor::DescriptorBuilder::new()
             .bind_buffer(

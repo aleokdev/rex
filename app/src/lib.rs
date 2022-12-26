@@ -28,9 +28,6 @@ impl App {
             camera: Camera::new(cx.width as f32 / cx.height as f32),
         };
 
-        cx.window.set_cursor_grab(CursorGrabMode::Confined)?;
-        cx.window.set_cursor_visible(false);
-
         Ok(App {
             cx,
             renderer,
@@ -50,7 +47,7 @@ pub fn run(width: u32, height: u32) -> anyhow::Result<()> {
     let mut last_time = std::time::Instant::now();
     let mut movement_keys_pressed = [false; 6];
     let mut sprint_key_pressed = false;
-    let mut focused = true;
+    let mut focused = false;
     event_loop.run(move |event, _target, control_flow| {
         let Some(app) = application.as_mut() else { return };
         *control_flow = ControlFlow::Poll;
