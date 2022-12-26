@@ -2,6 +2,7 @@ mod debug_callback;
 
 use super::{
     image::{Image, Texture},
+    memory::{self, GpuMemory},
     util::subresource_range,
 };
 use ash::{
@@ -18,6 +19,22 @@ use winit::{
     event_loop::EventLoop,
     window::{Window, WindowBuilder},
 };
+
+pub struct SwapchainTexture {
+    pub color: Texture,
+    pub depth: Texture,
+}
+
+pub struct SwapchainTextures(pub Vec<SwapchainTexture>);
+
+impl SwapchainTextures {
+    pub unsafe fn destroy(&mut self, device: &ash::Device, memory: &mut GpuMemory) {
+        self.0.drain(..).for_each(|img| {
+            device.destroy_image_view(img.color.view, None);
+            img.depth.destroy(&device, memory);
+        });
+    }
+}
 
 /// Represents a link to the GPU, and stores common data used by both compute and graphics.
 pub struct Cx {
@@ -37,7 +54,9 @@ pub struct Cx {
     pub device: ash::Device,
     pub swapchain_loader: Swapchain,
     pub swapchain: vk::SwapchainKHR,
-    pub swapchain_images: Vec<Texture>,
+    pub swapchain_images: SwapchainTextures,
+
+    pub memory: super::memory::GpuMemory,
 
     /// The queue used for rendering along with its index.
     pub render_queue: (vk::Queue, u32),
@@ -45,7 +64,7 @@ pub struct Cx {
 
 pub struct SwapchainData {
     pub swapchain: vk::SwapchainKHR,
-    pub images: Vec<Texture>,
+    pub images: SwapchainTextures,
 }
 
 impl Cx {
@@ -177,11 +196,14 @@ impl Cx {
 
         let swapchain_loader = Swapchain::new(&instance, &device);
 
+        let mut memory = super::memory::GpuMemory::new(&device, &instance, physical_device)?;
+
         let SwapchainData {
             swapchain,
             images: swapchain_images,
         } = Self::create_swapchain(
             &device,
+            &mut memory,
             surface_format,
             &surface_loader,
             physical_device,
@@ -209,6 +231,8 @@ impl Cx {
             swapchain,
             swapchain_images,
 
+            memory,
+
             render_queue: queue,
         })
     }
@@ -216,6 +240,7 @@ impl Cx {
     pub unsafe fn recreate_swapchain(&mut self, width: u32, height: u32) -> anyhow::Result<()> {
         let SwapchainData { swapchain, images } = Self::create_swapchain(
             &self.device,
+            &mut self.memory,
             self.surface_format,
             &self.surface_loader,
             self.physical_device,
@@ -227,13 +252,11 @@ impl Cx {
         )?;
 
         let old_swapchain = std::mem::replace(&mut self.swapchain, swapchain);
-        let old_swapchain_images = std::mem::replace(&mut self.swapchain_images, images);
+        let mut old_swapchain_images = std::mem::replace(&mut self.swapchain_images, images);
 
         self.device.device_wait_idle()?;
 
-        old_swapchain_images
-            .iter()
-            .for_each(|img| self.device.destroy_image_view(img.view, None));
+        old_swapchain_images.destroy(&self.device, &mut self.memory);
         self.swapchain_loader.destroy_swapchain(old_swapchain, None);
 
         self.width = width;
@@ -244,6 +267,7 @@ impl Cx {
 
     unsafe fn create_swapchain(
         device: &ash::Device,
+        memory: &mut memory::GpuMemory,
         surface_format: vk::SurfaceFormatKHR,
         surface_loader: &ash::extensions::khr::Surface,
         physical_device: vk::PhysicalDevice,
@@ -296,18 +320,19 @@ impl Cx {
             .get_swapchain_images(swapchain)?
             .into_iter()
             .map(|image| -> anyhow::Result<_> {
-                let image = Image {
+                let extent = vk::Extent3D {
+                    width,
+                    height,
+                    depth: 1,
+                };
+                let color = Image {
                     raw: image,
                     allocation: None,
                     // synthesise some assumed information about the swapchain images
                     info: vk::ImageCreateInfo::builder()
                         .image_type(vk::ImageType::TYPE_2D)
                         .format(surface_format.format)
-                        .extent(vk::Extent3D {
-                            width,
-                            height,
-                            depth: 1,
-                        })
+                        .extent(extent)
                         .mip_levels(1)
                         .array_layers(1)
                         .samples(vk::SampleCountFlags::TYPE_1)
@@ -317,9 +342,9 @@ impl Cx {
                         .build(),
                 };
 
-                let view = device.create_image_view(
+                let color_view = device.create_image_view(
                     &vk::ImageViewCreateInfo::builder()
-                        .image(image.raw)
+                        .image(color.raw)
                         .view_type(vk::ImageViewType::TYPE_2D)
                         .format(surface_format.format)
                         .subresource_range(subresource_range(
@@ -330,13 +355,47 @@ impl Cx {
                     None,
                 )?;
 
-                Ok(Texture { image, view })
+                let depth = memory.allocate_image(
+                    &vk::ImageCreateInfo::builder()
+                        .image_type(vk::ImageType::TYPE_2D)
+                        .extent(extent)
+                        .format(vk::Format::D32_SFLOAT)
+                        .mip_levels(1)
+                        .array_layers(1)
+                        .samples(vk::SampleCountFlags::TYPE_1)
+                        .tiling(vk::ImageTiling::OPTIMAL)
+                        .usage(vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT),
+                )?;
+
+                let depth_view = device.create_image_view(
+                    &vk::ImageViewCreateInfo::builder()
+                        .image(depth.raw)
+                        .view_type(vk::ImageViewType::TYPE_2D)
+                        .format(vk::Format::D32_SFLOAT)
+                        .subresource_range(subresource_range(
+                            vk::ImageAspectFlags::DEPTH,
+                            0..1,
+                            0..1,
+                        )),
+                    None,
+                )?;
+
+                Ok(SwapchainTexture {
+                    color: Texture {
+                        image: color,
+                        view: color_view,
+                    },
+                    depth: Texture {
+                        image: depth,
+                        view: depth_view,
+                    },
+                })
             })
             .collect::<anyhow::Result<_>>()?;
 
         Ok(SwapchainData {
             swapchain,
-            images: swapchain_images,
+            images: SwapchainTextures(swapchain_images),
         })
     }
 }
@@ -344,15 +403,15 @@ impl Cx {
 impl Drop for Cx {
     fn drop(&mut self) {
         unsafe {
+            self.device.device_wait_idle();
             self.swapchain_loader
                 .destroy_swapchain(self.swapchain, None);
             self.swapchain_images
-                .iter()
-                .for_each(|img| self.device.destroy_image_view(img.view, None));
-            self.device.destroy_device(None);
+                .destroy(&self.device, &mut self.memory);
             self.surface_loader.destroy_surface(self.surface, None);
             self.debug_utils_loader
                 .destroy_debug_utils_messenger(self.debug_callback, None);
+            self.device.destroy_device(None);
             self.instance.destroy_instance(None);
         }
     }

@@ -59,7 +59,6 @@ impl Frame {
 }
 
 pub struct Renderer {
-    pub memory: abs::memory::GpuMemory,
     pub ds_allocator: abs::descriptor::DescriptorAllocator,
     pub ds_layout_cache: abs::descriptor::DescriptorLayoutCache,
     pub arenas: Arenas,
@@ -112,15 +111,32 @@ impl Renderer {
             .layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
             .build();
 
+        let depth_attachment = vk::AttachmentDescription::builder()
+            .format(vk::Format::D32_SFLOAT) // TODO: Do not hardcode D322_SFLOAT for depth/stencil
+            .samples(vk::SampleCountFlags::TYPE_1)
+            .load_op(vk::AttachmentLoadOp::CLEAR)
+            .store_op(vk::AttachmentStoreOp::STORE)
+            .stencil_load_op(vk::AttachmentLoadOp::CLEAR)
+            .stencil_store_op(vk::AttachmentStoreOp::DONT_CARE) // We aren't using stencil for now
+            .initial_layout(vk::ImageLayout::UNDEFINED)
+            .final_layout(vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL)
+            .build();
+
+        let depth_attachment_ref = vk::AttachmentReference::builder()
+            .attachment(1)
+            .layout(vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL)
+            .build();
+
         let subpass = vk::SubpassDescription::builder()
             .pipeline_bind_point(vk::PipelineBindPoint::GRAPHICS)
             .color_attachments(&[color_attachment_ref])
+            .depth_stencil_attachment(&depth_attachment_ref)
             .build();
 
-        let color_attachments = &[color_attachment];
+        let attachments = &[color_attachment, depth_attachment];
         let subpasses = &[subpass];
         let renderpass_info = vk::RenderPassCreateInfo::builder()
-            .attachments(color_attachments)
+            .attachments(attachments)
             .subpasses(subpasses);
         let pass = cx.device.create_render_pass(&renderpass_info, None)?;
 
@@ -233,6 +249,15 @@ impl Renderer {
         let vertex_input_state = GpuVertex::description();
         let vertex_input_state_raw = vertex_input_state.raw();
 
+        let depth_stencil_state = vk::PipelineDepthStencilStateCreateInfo::builder()
+            .depth_test_enable(true)
+            .depth_write_enable(true)
+            .depth_compare_op(vk::CompareOp::LESS_OR_EQUAL)
+            .depth_bounds_test_enable(false)
+            .min_depth_bounds(0.)
+            .max_depth_bounds(1.)
+            .stencil_test_enable(false);
+
         let pipeline_info = vk::GraphicsPipelineCreateInfo::builder()
             .stages(stages)
             .input_assembly_state(&input_assembly_state)
@@ -242,6 +267,7 @@ impl Renderer {
             .subpass(0)
             .layout(pipeline_layout)
             .color_blend_state(&color_blend_state)
+            .depth_stencil_state(&depth_stencil_state)
             .viewport_state(&viewport_state)
             .vertex_input_state(&*vertex_input_state_raw);
 
@@ -251,7 +277,6 @@ impl Renderer {
             .map_err(|(_, e)| e)?[0];
 
         Ok(Renderer {
-            memory,
             ds_allocator,
             ds_layout_cache,
             arenas,
@@ -292,16 +317,16 @@ impl Renderer {
 
     unsafe fn create_swapchain_framebuffers(
         device: &ash::Device,
-        swapchain_images: &[abs::image::Texture],
+        swapchain_images: &abs::cx::SwapchainTextures,
         renderpass: vk::RenderPass,
         width: u32,
         height: u32,
     ) -> ash::prelude::VkResult<Vec<vk::Framebuffer>> {
         swapchain_images
+            .0
             .iter()
-            .map(|tex| tex.view)
-            .map(|img_view| {
-                let attachments = &[img_view];
+            .map(|tex| {
+                let attachments = &[tex.color.view, tex.depth.view];
                 let framebuffer_info = vk::FramebufferCreateInfo::builder()
                     .render_pass(renderpass)
                     .attachments(attachments)
@@ -341,8 +366,6 @@ impl Renderer {
         //      We have already waited for it, so we reset it preparing it for this next upload
         cx.device.reset_fences(&[frame.render_fence])?;
 
-        frame.allocator.free_scratch()?;
-
         // Reset the frame command buffer so we can reuse it:
         //      Technically we shouldn't do this, and we should have a couple command buffers to use
         //      before resetting them all (Resetting command buffers individually is a bit slower
@@ -370,9 +393,9 @@ impl Renderer {
         )?;
 
         // Upload the cube before rendering if we haven't already.
-        let cube = self.cube.get_or_insert_with(|| {
-            Self::setup_cube(cx, &mut self.arenas, &mut self.memory, &mut frame).unwrap()
-        });
+        let cube = self
+            .cube
+            .get_or_insert_with(|| Self::setup_cube(cx, &mut self.arenas, &mut frame).unwrap());
 
         // Upload the camera uniform PV matrix for this frame.
         abs::memory::cmd_stage(
@@ -391,11 +414,19 @@ impl Renderer {
         cx.device.cmd_begin_render_pass(
             frame.cmd,
             &ash::vk::RenderPassBeginInfo::builder()
-                .clear_values(&[ash::vk::ClearValue {
-                    color: ash::vk::ClearColorValue {
-                        float32: [0., 0., 0., 1.],
+                .clear_values(&[
+                    ash::vk::ClearValue {
+                        color: ash::vk::ClearColorValue {
+                            float32: [0., 0., 0., 1.],
+                        },
                     },
-                }])
+                    ash::vk::ClearValue {
+                        depth_stencil: ash::vk::ClearDepthStencilValue {
+                            depth: 1.,
+                            stencil: 0,
+                        },
+                    },
+                ])
                 .render_area(
                     ash::vk::Rect2D::builder()
                         .extent(ash::vk::Extent2D {
@@ -481,71 +512,67 @@ impl Renderer {
     unsafe fn setup_cube(
         cx: &mut abs::Cx,
         arenas: &mut Arenas,
-        memory: &mut GpuMemory,
         frame: &mut Frame,
     ) -> anyhow::Result<abs::mesh::GpuMesh> {
-        let vertices = arenas.vertex.suballocate(
-            memory,
-            std::mem::size_of::<[abs::mesh::GpuVertex; 3]>() as u64,
-        )?;
+        let vertices = [
+            abs::mesh::GpuVertex {
+                position: [0., 0., 1.],
+                normal: [0., 0., 0.],
+            },
+            abs::mesh::GpuVertex {
+                position: [1., 0., 1.],
+                normal: [0., 0., 0.],
+            },
+            abs::mesh::GpuVertex {
+                position: [0., 1., 1.],
+                normal: [0., 0., 0.],
+            },
+            abs::mesh::GpuVertex {
+                position: [1., 1., 1.],
+                normal: [0., 0., 0.],
+            },
+            abs::mesh::GpuVertex {
+                position: [0., 0., 0.],
+                normal: [0., 0., 0.],
+            },
+            abs::mesh::GpuVertex {
+                position: [1., 0., 0.],
+                normal: [0., 0., 0.],
+            },
+            abs::mesh::GpuVertex {
+                position: [0., 1., 0.],
+                normal: [0., 0., 0.],
+            },
+            abs::mesh::GpuVertex {
+                position: [1., 1., 0.],
+                normal: [0., 0., 0.],
+            },
+        ];
 
-        let indices = arenas
+        let indices = [
+            2, 6, 7, 2, 3, 7, //Top
+            0, 4, 5, 0, 1, 5, //Bottom
+            0, 2, 6, 0, 4, 6, //Left
+            1, 3, 7, 1, 5, 7, //Right
+            0, 2, 3, 0, 1, 3, //Front
+            4, 6, 7, 4, 5, 7, //Back
+        ];
+
+        let vertices_gpu = arenas
+            .vertex
+            .suballocate(&mut cx.memory, std::mem::size_of_val(&vertices) as u64)?;
+
+        let indices_gpu = arenas
             .index
-            .suballocate(memory, std::mem::size_of::<[u32; 3]>() as u64)?;
+            .suballocate(&mut cx.memory, std::mem::size_of_val(&indices) as u64)?;
 
         let mut cube = abs::mesh::GpuMesh {
-            indices,
-            vertices,
-            vertex_count: 36,
+            indices: indices_gpu,
+            vertices: vertices_gpu,
+            vertex_count: indices.len() as u32,
         };
 
-        cube.upload(
-            cx,
-            &mut frame.allocator,
-            frame.cmd,
-            &[
-                abs::mesh::GpuVertex {
-                    position: [0., 0., 1.],
-                    normal: [0., 0., 0.],
-                },
-                abs::mesh::GpuVertex {
-                    position: [1., 0., 1.],
-                    normal: [0., 0., 0.],
-                },
-                abs::mesh::GpuVertex {
-                    position: [0., 1., 1.],
-                    normal: [0., 0., 0.],
-                },
-                abs::mesh::GpuVertex {
-                    position: [1., 1., 1.],
-                    normal: [0., 0., 0.],
-                },
-                abs::mesh::GpuVertex {
-                    position: [0., 0., 0.],
-                    normal: [0., 0., 0.],
-                },
-                abs::mesh::GpuVertex {
-                    position: [1., 0., 0.],
-                    normal: [0., 0., 0.],
-                },
-                abs::mesh::GpuVertex {
-                    position: [0., 1., 0.],
-                    normal: [0., 0., 0.],
-                },
-                abs::mesh::GpuVertex {
-                    position: [1., 1., 0.],
-                    normal: [0., 0., 0.],
-                },
-            ],
-            &[
-                2, 6, 7, 2, 3, 7, //Top
-                0, 4, 5, 0, 1, 5, //Bottom
-                0, 2, 6, 0, 4, 6, //Left
-                1, 3, 7, 1, 5, 7, //Right
-                0, 2, 3, 0, 1, 3, //Front
-                4, 6, 7, 4, 5, 7, //Back
-            ],
-        )?;
+        cube.upload(cx, &mut frame.allocator, frame.cmd, &vertices, &indices)?;
 
         Ok(cube)
     }
@@ -567,10 +594,9 @@ impl Renderer {
             cx.device.destroy_command_pool(frame.cmd_pool, None);
         });
 
-        self.arenas.destroy(cx, &mut self.memory)?;
+        self.arenas.destroy(&cx.device, &mut cx.memory)?;
         drop(self.ds_layout_cache);
         drop(self.ds_allocator);
-        drop(self.memory);
         cx.device
             .destroy_pipeline_layout(self.pipeline_layout, None);
         cx.device.destroy_pipeline(self.pipeline, None);
@@ -644,11 +670,15 @@ impl Arenas {
         }
     }
 
-    pub unsafe fn destroy(self, cx: &mut Cx, memory: &mut GpuMemory) -> anyhow::Result<()> {
-        self.vertex.destroy(cx, memory)?;
-        self.index.destroy(cx, memory)?;
-        self.uniform.destroy(cx, memory)?;
-        self.scratch.destroy(cx, memory)?;
+    pub unsafe fn destroy(
+        self,
+        device: &ash::Device,
+        memory: &mut GpuMemory,
+    ) -> anyhow::Result<()> {
+        self.vertex.destroy(device, memory)?;
+        self.index.destroy(device, memory)?;
+        self.uniform.destroy(device, memory)?;
+        self.scratch.destroy(device, memory)?;
         Ok(())
     }
 }

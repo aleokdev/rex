@@ -93,6 +93,8 @@ impl BuddyAllocator {
     }
 
     pub fn deallocate(&mut self, offset: u64, order: u8) {
+        // FIXME: completely broken
+        /*
         assert!(order <= self.max_order);
 
         let level = self.max_order - order;
@@ -104,7 +106,7 @@ impl BuddyAllocator {
 
         self.block_mut(index - 1).order_free = order + 1;
 
-        self.update_blocks_above(index, order);
+        self.update_blocks_above(index, order); */
     }
 
     fn update_block(&mut self, node_index: usize, order: u8) {

@@ -22,13 +22,17 @@ impl Buffer {
         }
     }
 
-    pub unsafe fn destroy(self, cx: &mut Cx, memory: &mut GpuMemory) -> anyhow::Result<()> {
+    pub unsafe fn destroy(
+        self,
+        device: &ash::Device,
+        memory: &mut GpuMemory,
+    ) -> anyhow::Result<()> {
         // FIXME: This causes an assertion check in the buddy allocator when destroying the renderer
         // (assert_eq!(self.block(index - 1).order_free, 0); in deallocate)
         // So we skip freeing and just destroy the buffer altogether
 
         // memory.free_buffer(self.allocation)?;
-        cx.device.destroy_buffer(self.raw, None);
+        device.destroy_buffer(self.raw, None);
         Ok(())
     }
 }
@@ -110,9 +114,13 @@ impl BufferArena {
         self.suballocate(memory, size)
     }
 
-    pub unsafe fn destroy(self, cx: &mut Cx, memory: &mut GpuMemory) -> anyhow::Result<()> {
+    pub unsafe fn destroy(
+        self,
+        device: &ash::Device,
+        memory: &mut GpuMemory,
+    ) -> anyhow::Result<()> {
         for (buf, _) in self.buffers {
-            buf.destroy(cx, memory)?;
+            buf.destroy(device, memory)?;
         }
         Ok(())
     }

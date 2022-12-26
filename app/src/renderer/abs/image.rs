@@ -13,11 +13,15 @@ pub struct Image {
 }
 
 impl Image {
-    pub unsafe fn destroy(self, cx: &mut Cx, memory: &mut GpuMemory) -> anyhow::Result<()> {
+    pub unsafe fn destroy(
+        self,
+        device: &ash::Device,
+        memory: &mut GpuMemory,
+    ) -> anyhow::Result<()> {
         if let Some(allocation) = self.allocation {
             memory.free_image(allocation)?;
         }
-        cx.device.destroy_image(self.raw, None);
+        device.destroy_image(self.raw, None);
         Ok(())
     }
 }
@@ -29,9 +33,13 @@ pub struct Texture {
 }
 
 impl Texture {
-    pub unsafe fn destroy(self, cx: &mut Cx, memory: &mut GpuMemory) -> anyhow::Result<()> {
-        cx.device.destroy_image_view(self.view, None);
-        self.image.destroy(cx, memory)?;
+    pub unsafe fn destroy(
+        self,
+        device: &ash::Device,
+        memory: &mut GpuMemory,
+    ) -> anyhow::Result<()> {
+        device.destroy_image_view(self.view, None);
+        self.image.destroy(device, memory)?;
         Ok(())
     }
 }
