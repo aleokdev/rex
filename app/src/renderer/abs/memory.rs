@@ -1,14 +1,10 @@
 use super::{
-    buddy::BuddyAllocator,
+    allocators::{Allocation, BuddyAllocator, LinearAllocator, OutOfMemory},
     buffer::{Buffer, BufferSlice},
     image::Image,
 };
 use ash::vk;
-use std::{
-    collections::HashMap,
-    ffi::{c_void, CStr},
-};
-use thiserror::Error;
+use std::{collections::HashMap, ffi::c_void};
 
 const DEVICE_BLOCK_SIZE: u64 = 256 * 1024 * 1024;
 const HOST_BLOCK_SIZE: u64 = 64 * 1024 * 1024;
@@ -23,56 +19,41 @@ pub const fn level_count(size: u64, min_alloc: u64) -> u8 {
     log2_ceil(size / min_alloc) as u8
 }
 
-#[derive(Error, Debug)]
-#[error("OOM")]
-pub struct OutOfMemory;
-
 #[derive(Debug, Clone)]
 pub enum Allocator {
-    Linear { cursor: u64 },
+    Linear(LinearAllocator),
     Buddy(BuddyAllocator),
 }
 
 impl Allocator {
-    pub unsafe fn allocate(
-        &mut self,
-        block_size: u64,
-        size: u64,
-        alignment: u64,
-    ) -> anyhow::Result<(u64, u64)> {
+    pub fn allocate(&mut self, size: u64, alignment: u64) -> Result<Allocation, OutOfMemory> {
         let size = align(alignment, size);
         match self {
-            Allocator::Linear { cursor } => {
-                if size > block_size {
-                    return Err(anyhow::anyhow!("linear allocator: size > block_size"));
-                }
-
-                if block_size - *cursor > size {
-                    *cursor += size;
-                    return Ok((*cursor - size, size));
-                }
-
-                Err(anyhow::Error::new(OutOfMemory))
-            }
+            Allocator::Linear(allocator) => allocator.allocate(size),
             Allocator::Buddy(allocator) => allocator
-                .allocate(super::buddy::order_of(size, BASE_ORDER))
-                .ok_or_else(|| anyhow::Error::new(OutOfMemory))
-                .map(|offset| (offset, size.next_power_of_two())),
+                .allocate(BuddyAllocator::order_of(size, BASE_ORDER))
+                .ok_or_else(|| OutOfMemory)
+                .map(|offset| Allocation {
+                    offset,
+                    size: size.next_power_of_two(),
+                }),
         }
     }
 
     pub unsafe fn free(&mut self, allocation: Option<&GpuAllocation>) -> anyhow::Result<()> {
         match self {
-            Allocator::Linear { cursor } => {
+            Allocator::Linear(allocator) => {
                 assert!(allocation.is_none());
-                *cursor = 0;
+                allocator.reset();
                 Ok(())
             }
             Allocator::Buddy(allocator) => {
                 let allocation = allocation.ok_or_else(|| anyhow::anyhow!("no allocation"))?;
                 allocator.deallocate(
+                    // FIXME: I believe this is completely broken. It's assuming that GPU buffer
+                    // allocations start at address 0.
                     allocation.offset,
-                    super::buddy::order_of(allocation.size, BASE_ORDER),
+                    BuddyAllocator::order_of(allocation.size, BASE_ORDER),
                 );
                 Ok(())
             }
@@ -127,8 +108,8 @@ impl MemoryType {
         alignment: u64,
     ) -> anyhow::Result<(vk::DeviceMemory, u64, u64, usize, *mut c_void)> {
         for (i, block) in self.memory_blocks.iter_mut().enumerate() {
-            match block.allocator.allocate(self.block_size, size, alignment) {
-                Ok((offset, size)) => {
+            match block.allocator.allocate(size, alignment) {
+                Ok(Allocation { offset, size }) => {
                     return Ok((
                         block.raw,
                         offset,
@@ -137,8 +118,8 @@ impl MemoryType {
                         block.mapped.add(offset as usize),
                     ));
                 }
-                Err(e) if !e.is::<OutOfMemory>() => {
-                    return Err(e);
+                Err(e) => {
+                    return Err(e.into());
                 }
                 _ => {}
             }
@@ -269,7 +250,7 @@ impl GpuMemory {
                 memory_type_index,
                 block_size,
                 mapped,
-                default_allocator: Allocator::Linear { cursor: 0 },
+                default_allocator: Allocator::Linear(LinearAllocator::new(block_size)),
             });
 
         let (memory, offset, size, memory_block_index, mapped) =
@@ -594,6 +575,9 @@ fn find_properties(
     None
 }
 
+/// Returns `size` as a multiple of `alignment`. Same as `u64::next_multiple_of`.
+// TODO: Replace this with `next_multiple_of` once it is stabilized.
+// https://github.com/rust-lang/rust/issues/88581
 fn align(alignment: u64, size: u64) -> u64 {
     (size + alignment - 1) & !(alignment - 1)
 }

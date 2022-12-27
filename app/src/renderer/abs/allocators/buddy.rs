@@ -136,26 +136,27 @@ impl BuddyAllocator {
     const fn blocks_in_tree(levels: u8) -> usize {
         ((1 << levels) - 1) as _
     }
-}
 
-pub fn order_of(x: u64, base_order: u8) -> u8 {
-    if x == 0 {
-        return 0;
-    }
-
-    let mut i = x;
-    let mut log2 = 0;
-    while i > 0 {
-        i >>= 1;
-        log2 += 1;
-    }
-
-    let log2 = log2;
-
-    if log2 > base_order {
-        log2 - base_order
-    } else {
-        0
+    pub fn order_of(x: u64, base_order: u8) -> u8 {
+        if x == 0 {
+            return 0;
+        }
+    
+        let mut i = x;
+        let mut log2 = 0;
+        while i > 0 {
+            i >>= 1;
+            log2 += 1;
+        }
+    
+        let log2 = log2;
+        // REFACTOR why isn't x.log2() being used here instead?
+    
+        if log2 > base_order {
+            log2 - base_order
+        } else {
+            0
+        }
     }
 }
 

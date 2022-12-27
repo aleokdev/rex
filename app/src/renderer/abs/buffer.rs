@@ -1,10 +1,9 @@
 use std::ffi::{CStr, CString};
 
-use super::memory::OutOfMemory;
-use super::{
-    buddy::BuddyAllocator,
-    memory::{level_count, log2_ceil, Allocator, GpuAllocation, GpuMemory, MemoryUsage},
-};
+use crate::renderer::abs::allocators::Allocation;
+
+use super::allocators::BuddyAllocator;
+use super::memory::{level_count, log2_ceil, Allocator, GpuAllocation, GpuMemory, MemoryUsage};
 use ash::extensions::ext::DebugUtils;
 use ash::vk::{self, Handle};
 
@@ -78,7 +77,7 @@ impl BufferArena {
             info,
             usage,
             mapped,
-            default_allocator: Allocator::Linear { cursor: 0 },
+            default_allocator: Allocator::Linear { cursor_offset: 0 },
             alignment,
             debug_name,
         }
@@ -117,15 +116,15 @@ impl BufferArena {
 
         for (buffer, allocator) in &mut self.buffers {
             match allocator.allocate(buffer.allocation.size, size, self.alignment) {
-                Ok((offset, size)) => {
+                Ok(Allocation { offset, size }) => {
                     return Ok(BufferSlice {
                         buffer: buffer.clone(),
                         offset,
                         size,
                     })
                 }
-                Err(e) if !e.is::<OutOfMemory>() => {
-                    return Err(e);
+                Err(e) => {
+                    return Err(e.into());
                 }
                 _ => {}
             }
