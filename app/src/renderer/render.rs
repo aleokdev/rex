@@ -88,6 +88,7 @@ impl Renderer {
         let mut ds_layout_cache = abs::descriptor::DescriptorLayoutCache::new(cx);
 
         let mut arenas = Arenas::new(
+            &cx,
             &cx.instance
                 .get_physical_device_properties(cx.physical_device)
                 .limits,
@@ -164,9 +165,12 @@ impl Renderer {
             None,
         )?;
 
-        let uniforms = arenas
-            .uniform
-            .suballocate(&mut cx.memory, std::mem::size_of::<[f32; 16]>() as u64)?;
+        let uniforms = arenas.uniform.suballocate(
+            &mut cx.memory,
+            cx.device.handle(),
+            &cx.debug_utils_loader,
+            std::mem::size_of::<[f32; 16]>() as u64,
+        )?;
 
         let (uniform_set, uniform_set_layout) = abs::descriptor::DescriptorBuilder::new()
             .bind_buffer(
@@ -402,6 +406,11 @@ impl Renderer {
             frame.cmd,
             &(world.camera.proj() * world.camera.view()).to_cols_array(),
             &self.uniforms,
+        )?
+        .name(
+            cx.device.handle(),
+            &cx.debug_utils_loader,
+            cstr::cstr!("Camera Uniform Scratch Buffer"),
         )?;
 
         // Insert a memory barrier to wait until the cube mesh and camera uniform have been uploaded.
@@ -556,13 +565,19 @@ impl Renderer {
             4, 6, 7, 4, 5, 7, //Back
         ];
 
-        let vertices_gpu = arenas
-            .vertex
-            .suballocate(&mut cx.memory, std::mem::size_of_val(&vertices) as u64)?;
+        let vertices_gpu = arenas.vertex.suballocate(
+            &mut cx.memory,
+            cx.device.handle(),
+            &cx.debug_utils_loader,
+            std::mem::size_of_val(&vertices) as u64,
+        )?;
 
-        let indices_gpu = arenas
-            .index
-            .suballocate(&mut cx.memory, std::mem::size_of_val(&indices) as u64)?;
+        let indices_gpu = arenas.index.suballocate(
+            &mut cx.memory,
+            cx.device.handle(),
+            &cx.debug_utils_loader,
+            std::mem::size_of_val(&indices) as u64,
+        )?;
 
         let mut cube = abs::mesh::GpuMesh {
             indices: indices_gpu,
@@ -580,8 +595,8 @@ impl Renderer {
 
         self.deletion.drain(..).for_each(|f| f(cx));
 
-        self.frames.iter().for_each(|frame| {
-            let frame = frame.as_ref().unwrap();
+        self.frames.iter_mut().for_each(|frame| {
+            let frame = frame.take().unwrap();
             cx.device.destroy_fence(frame.render_fence, None);
             cx.device.destroy_semaphore(frame.present_semaphore, None);
             cx.device.destroy_semaphore(frame.render_semaphore, None);
@@ -590,6 +605,8 @@ impl Renderer {
                 .reset_command_pool(frame.cmd_pool, Default::default())
                 .unwrap();
             cx.device.destroy_command_pool(frame.cmd_pool, None);
+
+            drop(frame.allocator);
         });
 
         self.arenas.destroy(&cx.device, &mut cx.memory)?;
@@ -617,7 +634,7 @@ pub struct Arenas {
 }
 
 impl Arenas {
-    pub fn new(limits: &vk::PhysicalDeviceLimits) -> Self {
+    pub fn new(cx: &Cx, limits: &vk::PhysicalDeviceLimits) -> Self {
         Arenas {
             vertex: abs::buffer::BufferArena::new_list(
                 vk::BufferCreateInfo::builder()
@@ -629,6 +646,7 @@ impl Arenas {
                 1,
                 false,
                 256 * std::mem::size_of::<abs::mesh::GpuVertex>() as u64,
+                cstr::cstr!("Vertex buffer arena").to_owned(),
             ),
             index: abs::buffer::BufferArena::new_list(
                 vk::BufferCreateInfo::builder()
@@ -640,6 +658,7 @@ impl Arenas {
                 1,
                 false,
                 256 * std::mem::size_of::<u32>() as u64,
+                cstr::cstr!("Index buffer arena").to_owned(),
             ),
             uniform: abs::buffer::BufferArena::new_list(
                 vk::BufferCreateInfo::builder()
@@ -653,6 +672,7 @@ impl Arenas {
                 limits.min_uniform_buffer_offset_alignment,
                 false,
                 128,
+                cstr::cstr!("Uniform buffer arena").to_owned(),
             ),
             scratch: abs::buffer::BufferArena::new_list(
                 vk::BufferCreateInfo::builder()
@@ -664,6 +684,7 @@ impl Arenas {
                 1,
                 true,
                 128,
+                cstr::cstr!("Scratch buffer arena").to_owned(),
             ),
         }
     }

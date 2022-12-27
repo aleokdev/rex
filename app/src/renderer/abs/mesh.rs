@@ -71,8 +71,16 @@ impl GpuMesh {
         vertices: &[GpuVertex],
         indices: &[u32],
     ) -> anyhow::Result<()> {
-        cmd_stage(&cx.device, scratch_memory, cmd, vertices, &self.vertices)?;
-        cmd_stage(&cx.device, scratch_memory, cmd, indices, &self.indices)?;
+        cmd_stage(&cx.device, scratch_memory, cmd, vertices, &self.vertices)?.name(
+            cx.device.handle(),
+            &cx.debug_utils_loader,
+            cstr::cstr!("Mesh Vertex Scratch Buffer"),
+        )?;
+        cmd_stage(&cx.device, scratch_memory, cmd, indices, &self.indices)?.name(
+            cx.device.handle(),
+            &cx.debug_utils_loader,
+            cstr::cstr!("Mesh Index Scratch Buffer"),
+        )?;
         Ok(())
     }
 }

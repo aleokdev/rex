@@ -1,10 +1,12 @@
+use std::ffi::{CStr, CString};
+
 use super::memory::OutOfMemory;
 use super::{
     buddy::BuddyAllocator,
-    cx::Cx,
     memory::{level_count, log2_ceil, Allocator, GpuAllocation, GpuMemory, MemoryUsage},
 };
-use ash::vk;
+use ash::extensions::ext::DebugUtils;
+use ash::vk::{self, Handle};
 
 #[derive(Debug, Clone)]
 pub struct Buffer {
@@ -20,6 +22,22 @@ impl Buffer {
             info: Default::default(),
             allocation: GpuAllocation::null(),
         }
+    }
+
+    pub unsafe fn name(
+        &self,
+        device: vk::Device,
+        utils: &DebugUtils,
+        name: &CStr,
+    ) -> anyhow::Result<()> {
+        utils.debug_utils_set_object_name(
+            device,
+            &vk::DebugUtilsObjectNameInfoEXT::builder()
+                .object_handle(self.raw.as_raw())
+                .object_name(name)
+                .object_type(vk::ObjectType::BUFFER),
+        )?;
+        Ok(())
     }
 
     pub unsafe fn destroy(
@@ -44,6 +62,7 @@ pub struct BufferArena {
     mapped: bool,
     default_allocator: Allocator,
     alignment: u64,
+    debug_name: CString,
 }
 
 impl BufferArena {
@@ -52,6 +71,7 @@ impl BufferArena {
         usage: MemoryUsage,
         mapped: bool,
         alignment: u64,
+        debug_name: CString,
     ) -> Self {
         BufferArena {
             buffers: vec![],
@@ -60,6 +80,7 @@ impl BufferArena {
             mapped,
             default_allocator: Allocator::Linear { cursor: 0 },
             alignment,
+            debug_name,
         }
     }
 
@@ -69,6 +90,7 @@ impl BufferArena {
         alignment: u64,
         mapped: bool,
         min_alloc: u64,
+        debug_name: CString,
     ) -> Self {
         BufferArena {
             buffers: vec![],
@@ -80,12 +102,15 @@ impl BufferArena {
                 log2_ceil(min_alloc) as u8,
             )),
             alignment,
+            debug_name,
         }
     }
 
     pub unsafe fn suballocate(
         &mut self,
         memory: &mut GpuMemory,
+        device: vk::Device,
+        utils: &DebugUtils,
         size: u64,
     ) -> anyhow::Result<BufferSlice> {
         assert!(size <= self.info.size);
@@ -106,12 +131,11 @@ impl BufferArena {
             }
         }
 
-        self.buffers.push((
-            memory.allocate_buffer(self.info, self.usage, self.mapped)?,
-            self.default_allocator.clone(),
-        ));
+        let buffer = memory.allocate_buffer(self.info, self.usage, self.mapped)?;
+        buffer.name(device, utils, &self.debug_name)?;
+        self.buffers.push((buffer, self.default_allocator.clone()));
 
-        self.suballocate(memory, size)
+        self.suballocate(memory, device, utils, size)
     }
 
     pub unsafe fn destroy(

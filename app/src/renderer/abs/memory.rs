@@ -4,7 +4,10 @@ use super::{
     image::Image,
 };
 use ash::vk;
-use std::{collections::HashMap, ffi::c_void};
+use std::{
+    collections::HashMap,
+    ffi::{c_void, CStr},
+};
 use thiserror::Error;
 
 const DEVICE_BLOCK_SIZE: u64 = 256 * 1024 * 1024;
@@ -444,6 +447,7 @@ impl GpuMemory {
 
 impl Drop for GpuMemory {
     fn drop(&mut self) {
+        unsafe { self.free_scratch() };
         self.linear_linear
             .drain()
             .chain(self.list_linear.drain())
@@ -523,13 +527,15 @@ impl MemoryUsage {
     }
 }
 
+/// Queues a copy from src to dst using a newly allocated scratch buffer.
+/// Returns the staging scratch buffer.
 pub unsafe fn cmd_stage<T: Clone>(
     device: &ash::Device,
     scratch: &mut GpuMemory,
     cmd: vk::CommandBuffer,
     src: &[T],
     dst: &BufferSlice,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<Buffer> {
     let staging = scratch.allocate_scratch_buffer(
         vk::BufferCreateInfo::builder()
             .size(std::mem::size_of::<T>() as u64 * src.len() as u64)
@@ -553,7 +559,7 @@ pub unsafe fn cmd_stage<T: Clone>(
             .build()],
     );
 
-    Ok(())
+    Ok(staging)
 }
 
 pub unsafe fn cmd_stage_sync(device: &ash::Device, cmd: vk::CommandBuffer) {
