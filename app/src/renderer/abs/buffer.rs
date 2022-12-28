@@ -97,8 +97,8 @@ impl BufferArena {
             usage,
             mapped,
             default_allocator: Allocator::Buddy(BuddyAllocator::new(
-                level_count(info.size, min_alloc),
-                log2_ceil(min_alloc) as u8,
+                BuddyAllocator::order_of(info.size / min_alloc),
+                min_alloc,
             )),
             alignment,
             debug_name,
@@ -116,7 +116,7 @@ impl BufferArena {
 
         for (buffer, allocator) in &mut self.buffers {
             match allocator.allocate(buffer.allocation.size, size, self.alignment) {
-                Ok(Allocation { offset, size }) => {
+                Ok(Allocation { offset, size, data }) => {
                     return Ok(BufferSlice {
                         buffer: buffer.clone(),
                         offset,

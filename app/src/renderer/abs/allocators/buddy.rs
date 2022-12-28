@@ -1,174 +1,175 @@
-/// A [buddy allocator], adapted from https://github.com/Restioson/buddy-allocator-workshop.
-///
-/// [buddy allocator]: https://en.wikipedia.org/wiki/Buddy_memory_allocation
+use crate::abs::util::align;
+
+/// Allocation information from a `BuddyAllocator` allocation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct BuddyAllocation {
+    offset: u64,
+    size: u64,
+    index: usize,
+}
+
+impl BuddyAllocation {
+    pub fn offset(&self) -> u64 {
+        self.offset
+    }
+
+    pub fn size(&self) -> u64 {
+        self.size
+    }
+}
+
+/// Bitmap-tree-based buddy allocator, loosely based on https://github.com/Restioson/buddy-allocator-workshop.
 #[derive(Debug, Clone)]
 pub struct BuddyAllocator {
-    tree: Vec<Block>,
-
-    level_count: u8,
+    blocks: Vec<Block>,
+    o0_size: u64,
     max_order: u8,
-    base_order: u8,
-    max_order_size: u8,
 }
 
 impl BuddyAllocator {
-    pub fn new(level_count: u8, base_order: u8) -> Self {
-        let blocks_in_tree = Self::blocks_in_tree(level_count);
-        let max_order = level_count - 1;
-        let max_order_size = base_order + max_order;
-
-        let mut tree = vec![Block::new_free(0); blocks_in_tree];
-
-        let mut start = 0usize;
-        for level in 0..level_count {
-            let order = max_order - level;
-            let size = 1 << (level as usize);
-            for block in tree.iter_mut().skip(start).take(size) {
-                *block = Block::new_free(order);
-            }
-            start += size;
+    /// Creates a new buddy allocator.
+    ///
+    /// - `max_order` specifies the max allocatable order.
+    /// - `o0_size` specifies the physical size of a block of order 0.
+    pub fn new(max_order: u8, o0_size: u64) -> Self {
+        let mut max_level = max_order + 1;
+        let mut blocks = vec![Block::new(0); Self::blocks_for_level(max_level)];
+        let mut i = 0;
+        for o in 0..max_level {
+            let n = 1 << o;
+            blocks[i..(i + n)].fill(Block::new(max_order - o));
+            i += n;
         }
-
         BuddyAllocator {
-            tree,
-
-            level_count,
+            blocks,
+            o0_size,
             max_order,
-            base_order,
-            max_order_size,
         }
     }
 
-    #[inline]
-    fn block(&self, i: usize) -> &Block {
-        &self.tree[i]
-    }
+    /// Allocates memory of physical size `size`.
+    pub fn allocate(&mut self, size: u64) -> Option<BuddyAllocation> {
+        let aligned = align(self.o0_size, size);
+        let order = Self::order_of(aligned / self.o0_size);
 
-    #[inline]
-    fn block_mut(&mut self, i: usize) -> &mut Block {
-        &mut self.tree[i]
-    }
-
-    pub fn allocate(&mut self, desired_order: u8) -> Option<u64> {
-        assert!(desired_order <= self.max_order);
-
-        let root = self.block_mut(0);
-
-        if root.order_free == 0 || (root.order_free - 1) < desired_order {
+        let root = self.read_block(0);
+        if root == 0 || root - 1 < order {
+            // root == 0: root is allocated, i.e., there is 0 memory left.
+            // root - 1 < order: greatest available order cannot satisfy req allocation.
             return None;
         }
+        // past this point we know that there is enough memory for req allocation.
 
-        let mut addr: u64 = 0;
-        let mut node_index = 1;
+        // fast path: allocating all of it
+        if root - 1 == order {
+            self.write_block(0, 0);
+            return Some(BuddyAllocation {
+                offset: 0,
+                size: aligned,
+                index: 0,
+            });
+        }
 
-        let max_level = self.max_order - desired_order;
-
+        // start from the top.
+        // keep going down until we hit a block that matches order.
+        let max_level = self.max_order - order;
+        let mut offset = 0; // physical offset into blocks
+        let mut i = 0; // current index
         for level in 0..max_level {
-            let left_child_index = node_index << 1;
-            let left_child = self.block(left_child_index - 1);
+            let i_parent = i;
+            let parent = self.read_block(i_parent);
+            let i_left = Self::left_child(i);
+            let left = self.read_block(i_left);
 
-            let o = left_child.order_free;
-            node_index = if o != 0 && o > desired_order {
-                left_child_index
+            // check if left can satsify req allocation
+            if left != 0 && left - 1 >= order {
+                i = i_left;
             } else {
-                addr += 1 << ((self.max_order_size - level - 1) as u64);
-                left_child_index + 1
-            };
+                // otherwise, we know for certain that the right must then be able to
+                // because the parent's order said it could (which is the max of left/right)
+                i = i_left + 1;
+                offset += 1 << ((self.max_order - level - 1) as u64);
+            }
         }
 
-        let block = self.block_mut(node_index - 1);
-        block.order_free = 0;
+        self.write_block(i, 0);
+        self.update(i, max_level);
+        Some(BuddyAllocation {
+            offset: self.o0_size * offset,
+            size: aligned,
+            index: i,
+        })
+    }
 
+    /// Deallocates some previously allocated memory.
+    pub fn deallocate(&mut self, alloc: BuddyAllocation) {
+        // deallocation routine is very simple because we have
+        // the luxury of storing index with the allocation
+        let order = Self::order_of(alloc.size / self.o0_size);
+        self.write_block(alloc.index, order + 1);
+        self.update(alloc.index, self.max_order - order);
+    }
+
+    fn read_block(&self, i: usize) -> u8 {
+        self.blocks[i].order
+    }
+
+    fn write_block(&mut self, i: usize, new_order: u8) {
+        self.blocks[i].order = new_order;
+    }
+
+    fn update(&mut self, mut i: usize, max_level: u8) {
+        // traverse upwards and set parent order to max of child order
         for _ in 0..max_level {
-            let right_index = node_index & !1;
-            node_index >>= 1;
-
-            let left = self.block(right_index - 1).order_free;
-            let right = self.block(right_index).order_free;
-
-            self.block_mut(node_index - 1).order_free = std::cmp::max(left, right);
-        }
-
-        Some(addr)
-    }
-
-    pub fn deallocate(&mut self, offset: u64, order: u8) {
-        // FIXME: completely broken
-        /*
-        assert!(order <= self.max_order);
-
-        let level = self.max_order - order;
-        let level_offset = Self::blocks_in_tree(level);
-        let index = level_offset + ((offset as usize) >> (order + self.base_order)) + 1;
-
-        assert!(index < Self::blocks_in_tree(self.level_count));
-        assert_eq!(self.block(index - 1).order_free, 0);
-
-        self.block_mut(index - 1).order_free = order + 1;
-
-        self.update_blocks_above(index, order); */
-    }
-
-    fn update_block(&mut self, node_index: usize, order: u8) {
-        assert!(order != 0);
-        assert!(node_index != 0);
-
-        let left_index = (node_index << 1) - 1;
-        let left = self.block(left_index).order_free;
-        let right = self.block(left_index + 1).order_free;
-
-        if left == order && right == order {
-            self.block_mut(node_index - 1).order_free = order + 1;
-        } else {
-            self.block_mut(node_index - 1).order_free = std::cmp::max(left, right);
+            // ensure we start from right child (we don't know if i is left or right)
+            let i_right = (i + 1) & !1;
+            i = Self::parent(i);
+            let left = self.read_block(i_right - 1);
+            let right = self.read_block(i_right);
+            self.write_block(i, left.max(right)); // parent = max children
         }
     }
 
-    fn update_blocks_above(&mut self, index: usize, order: u8) {
-        let mut node_index = index;
-
-        for order in order + 1..=self.max_order {
-            node_index >>= 1;
-            self.update_block(node_index, order);
-        }
+    const fn blocks_for_level(level: u8) -> usize {
+        ((1 << level) - 1) as usize
     }
 
-    const fn blocks_in_tree(levels: u8) -> usize {
-        ((1 << levels) - 1) as _
+    const fn left_child(i: usize) -> usize {
+        ((i + 1) << 1) - 1
     }
 
-    pub fn order_of(x: u64, base_order: u8) -> u8 {
+    const fn right_child(i: usize) -> usize {
+        (((i + 1) << 1) + 1) - 1
+    }
+
+    const fn parent(i: usize) -> usize {
+        ((i + 1) >> 1) - 1
+    }
+
+    pub const fn order_of(x: u64) -> u8 {
         if x == 0 {
             return 0;
         }
-    
         let mut i = x;
         let mut log2 = 0;
         while i > 0 {
             i >>= 1;
             log2 += 1;
         }
-    
-        let log2 = log2;
-        // REFACTOR why isn't x.log2() being used here instead?
-    
-        if log2 > base_order {
-            log2 - base_order
-        } else {
-            0
-        }
+        log2
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 struct Block {
-    order_free: u8,
+    // >0: greatest order - 1 available to allocate from this subtree
+    //      (including from this block itself)
+    // =0: allocated
+    order: u8,
 }
 
 impl Block {
-    pub fn new_free(order: u8) -> Self {
-        Block {
-            order_free: order + 1,
-        }
+    pub fn new(order: u8) -> Self {
+        Block { order: order + 1 }
     }
 }
