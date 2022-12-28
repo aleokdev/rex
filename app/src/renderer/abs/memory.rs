@@ -1,7 +1,8 @@
 use super::{
-    allocators::{Allocation, BuddyAllocator, LinearAllocator, OutOfMemory},
+    allocators::{Allocation, AllocationData, BuddyAllocator, LinearAllocator, OutOfMemory},
     buffer::{Buffer, BufferSlice},
     image::Image,
+    util::align,
 };
 use ash::vk;
 use std::{collections::HashMap, ffi::c_void};
@@ -9,7 +10,6 @@ use std::{collections::HashMap, ffi::c_void};
 const DEVICE_BLOCK_SIZE: u64 = 256 * 1024 * 1024;
 const HOST_BLOCK_SIZE: u64 = 64 * 1024 * 1024;
 const MIN_ALLOC_SIZE: u64 = 1024;
-const BASE_ORDER: u8 = log2_ceil(MIN_ALLOC_SIZE) as u8;
 
 pub const fn log2_ceil(x: u64) -> u32 {
     u64::BITS - x.leading_zeros()
@@ -31,13 +31,16 @@ impl Allocator {
         let size = align(alignment, size);
         match self {
             Allocator::Linear(allocator) => allocator.allocate(size),
-            Allocator::Buddy(allocator) => allocator
-                .allocate(BuddyAllocator::order_of(size, BASE_ORDER))
-                .ok_or_else(|| OutOfMemory)
-                .map(|offset| Allocation {
-                    offset,
-                    size: size.next_power_of_two(),
-                }),
+            Allocator::Buddy(allocator) => {
+                allocator
+                    .allocate(size)
+                    .ok_or_else(|| OutOfMemory)
+                    .map(|alloc| Allocation {
+                        offset: alloc.offset(),
+                        size: alloc.size(),
+                        data: AllocationData::Buddy(alloc),
+                    })
+            }
         }
     }
 
@@ -50,12 +53,11 @@ impl Allocator {
             }
             Allocator::Buddy(allocator) => {
                 let allocation = allocation.ok_or_else(|| anyhow::anyhow!("no allocation"))?;
-                allocator.deallocate(
-                    // FIXME: I believe this is completely broken. It's assuming that GPU buffer
-                    // allocations start at address 0.
-                    allocation.offset,
-                    BuddyAllocator::order_of(allocation.size, BASE_ORDER),
-                );
+                if let AllocationData::Buddy(alloc) = allocation.allocation_data {
+                    allocator.deallocate(alloc);
+                } else {
+                    return Err(anyhow::anyhow!("invalid allocation"));
+                }
                 Ok(())
             }
         }
@@ -107,14 +109,22 @@ impl MemoryType {
         device: &ash::Device,
         size: u64,
         alignment: u64,
-    ) -> anyhow::Result<(vk::DeviceMemory, u64, u64, usize, *mut c_void)> {
+    ) -> anyhow::Result<(
+        vk::DeviceMemory,
+        u64,
+        u64,
+        AllocationData,
+        usize,
+        *mut c_void,
+    )> {
         for (i, block) in self.memory_blocks.iter_mut().enumerate() {
             match block.allocator.allocate(size, alignment) {
-                Ok(Allocation { offset, size }) => {
+                Ok(Allocation { offset, size, data }) => {
                     return Ok((
                         block.raw,
                         offset,
                         size,
+                        data,
                         i,
                         block.mapped.add(offset as usize),
                     ));
@@ -254,7 +264,7 @@ impl GpuMemory {
                 default_allocator: Allocator::Linear(LinearAllocator::new(block_size)),
             });
 
-        let (memory, offset, size, memory_block_index, mapped) =
+        let (memory, offset, size, data, memory_block_index, mapped) =
             memory_type.allocate(&self.device, requirements.size, requirements.alignment)?;
 
         Ok(GpuAllocation {
@@ -264,6 +274,7 @@ impl GpuMemory {
             memory_type_index,
             memory_block_index,
             allocator: AllocatorType::Linear,
+            allocation_data: data,
             mapped,
         })
     }
@@ -348,13 +359,13 @@ impl GpuMemory {
                 memory_type_index,
                 block_size,
                 mapped,
-                default_allocator: Allocator::Buddy(BuddyAllocator::new(level_count(
-                    block_size,
+                default_allocator: Allocator::Buddy(BuddyAllocator::new(
+                    BuddyAllocator::order_of(block_size / MIN_ALLOC_SIZE),
                     MIN_ALLOC_SIZE,
-                ))),
+                )),
             });
 
-        let (memory, offset, size, memory_block_index, mapped) =
+        let (memory, offset, size, data, memory_block_index, mapped) =
             memory_type.allocate(&self.device, requirements.size, requirements.alignment)?;
 
         Ok(GpuAllocation {
@@ -364,6 +375,7 @@ impl GpuMemory {
             memory_type_index,
             memory_block_index,
             allocator: AllocatorType::List,
+            allocation_data: data,
             mapped,
         })
     }
@@ -388,13 +400,13 @@ impl GpuMemory {
                 memory_type_index,
                 block_size: DEVICE_BLOCK_SIZE,
                 mapped: false,
-                default_allocator: Allocator::Buddy(BuddyAllocator::new(level_count(
-                    DEVICE_BLOCK_SIZE,
+                default_allocator: Allocator::Buddy(BuddyAllocator::new(
+                    BuddyAllocator::order_of(DEVICE_BLOCK_SIZE / MIN_ALLOC_SIZE),
                     MIN_ALLOC_SIZE,
-                ))),
+                )),
             });
 
-        let (memory, offset, size, memory_block_index, _) =
+        let (memory, offset, size, data, memory_block_index, _) =
             memory_type.allocate(&self.device, requirements.size, requirements.alignment)?;
 
         self.device.bind_image_memory(image, memory, offset)?;
@@ -408,6 +420,7 @@ impl GpuMemory {
                 memory_type_index,
                 memory_block_index,
                 allocator: AllocatorType::Image,
+                allocation_data: data,
                 mapped: std::ptr::null_mut(),
             }),
             info: *info,
@@ -454,6 +467,7 @@ pub struct GpuAllocation {
     pub memory_type_index: u32,
     pub memory_block_index: usize,
     pub allocator: AllocatorType,
+    pub allocation_data: AllocationData,
     pub mapped: *mut c_void,
 }
 
@@ -466,6 +480,7 @@ impl GpuAllocation {
             memory_type_index: 0,
             memory_block_index: 0,
             allocator: AllocatorType::Null,
+            allocation_data: AllocationData::Null,
             mapped: std::ptr::null_mut(),
         }
     }
@@ -574,11 +589,4 @@ fn find_properties(
         }
     }
     None
-}
-
-/// Returns `size` as a multiple of `alignment`. Same as `u64::next_multiple_of`.
-// TODO: Replace this with `next_multiple_of` once it is stabilized.
-// https://github.com/rust-lang/rust/issues/88581
-fn align(alignment: u64, size: u64) -> u64 {
-    (size + alignment - 1) & !(alignment - 1)
 }

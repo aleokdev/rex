@@ -38,3 +38,10 @@ pub fn subresource_range(
         layer_count,
     }
 }
+
+/// Returns `size` as a multiple of `alignment`. Same as `u64::next_multiple_of`.
+// TODO: Replace this with `next_multiple_of` once it is stabilized.
+// https://github.com/rust-lang/rust/issues/88581
+pub fn align(alignment: u64, size: u64) -> u64 {
+    (size + alignment - 1) & !(alignment - 1)
+}

@@ -9,7 +9,7 @@
 
 mod buddy;
 
-pub use buddy::BuddyAllocator;
+pub use buddy::{BuddyAllocation, BuddyAllocator};
 
 pub mod linear;
 
@@ -17,9 +17,16 @@ pub use linear::LinearAllocator;
 
 use thiserror::Error;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum AllocationData {
+    Null,
+    Buddy(BuddyAllocation),
+}
+
 pub struct Allocation {
     pub offset: u64,
     pub size: u64,
+    pub data: AllocationData,
 }
 
 #[derive(Error, Debug)]
