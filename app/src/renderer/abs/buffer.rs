@@ -65,6 +65,7 @@ pub struct BufferArena {
 }
 
 impl BufferArena {
+    /* TODO reimplement
     pub fn new_linear(
         info: vk::BufferCreateInfo,
         usage: MemoryUsage,
@@ -81,7 +82,7 @@ impl BufferArena {
             alignment,
             debug_name,
         }
-    }
+    } */
 
     pub fn new_list(
         info: vk::BufferCreateInfo,
@@ -96,10 +97,9 @@ impl BufferArena {
             info,
             usage,
             mapped,
-            default_allocator: Allocator::Buddy(BuddyAllocator::new(
-                level_count(info.size, min_alloc),
-                log2_ceil(min_alloc) as u8,
-            )),
+            default_allocator: Allocator::Buddy(BuddyAllocator::new(level_count(
+                info.size, min_alloc,
+            ))),
             alignment,
             debug_name,
         }
@@ -115,7 +115,7 @@ impl BufferArena {
         assert!(size <= self.info.size);
 
         for (buffer, allocator) in &mut self.buffers {
-            match allocator.allocate(buffer.allocation.size, size, self.alignment) {
+            match allocator.allocate(size, self.alignment) {
                 Ok(Allocation { offset, size }) => {
                     return Ok(BufferSlice {
                         buffer: buffer.clone(),
@@ -126,7 +126,6 @@ impl BufferArena {
                 Err(e) => {
                     return Err(e.into());
                 }
-                _ => {}
             }
         }
 

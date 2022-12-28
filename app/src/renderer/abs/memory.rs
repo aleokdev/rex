@@ -19,6 +19,7 @@ pub const fn level_count(size: u64, min_alloc: u64) -> u8 {
     log2_ceil(size / min_alloc) as u8
 }
 
+/// A general-purpose space allocator. May be [linear](LinearAllocator) or a [buddy allocator](BuddyAllocator).
 #[derive(Debug, Clone)]
 pub enum Allocator {
     Linear(LinearAllocator),
@@ -347,10 +348,10 @@ impl GpuMemory {
                 memory_type_index,
                 block_size,
                 mapped,
-                default_allocator: Allocator::Buddy(BuddyAllocator::new(
-                    level_count(block_size, MIN_ALLOC_SIZE),
-                    BASE_ORDER,
-                )),
+                default_allocator: Allocator::Buddy(BuddyAllocator::new(level_count(
+                    block_size,
+                    MIN_ALLOC_SIZE,
+                ))),
             });
 
         let (memory, offset, size, memory_block_index, mapped) =
@@ -387,10 +388,10 @@ impl GpuMemory {
                 memory_type_index,
                 block_size: DEVICE_BLOCK_SIZE,
                 mapped: false,
-                default_allocator: Allocator::Buddy(BuddyAllocator::new(
-                    level_count(DEVICE_BLOCK_SIZE, MIN_ALLOC_SIZE),
-                    BASE_ORDER,
-                )),
+                default_allocator: Allocator::Buddy(BuddyAllocator::new(level_count(
+                    DEVICE_BLOCK_SIZE,
+                    MIN_ALLOC_SIZE,
+                ))),
             });
 
         let (memory, offset, size, memory_block_index, _) =
