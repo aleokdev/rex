@@ -1,4 +1,5 @@
 use super::{
+    allocators::{self, BuddyAllocation},
     buffer::BufferSlice,
     memory::{cmd_stage, GpuMemory},
     Cx,
@@ -56,13 +57,13 @@ impl GpuVertex {
     }
 }
 
-pub struct GpuMesh {
-    pub vertices: BufferSlice,
-    pub indices: BufferSlice,
+pub struct GpuMesh<Allocation: allocators::Allocation = BuddyAllocation> {
+    pub vertices: BufferSlice<Allocation>,
+    pub indices: BufferSlice<Allocation>,
     pub vertex_count: u32,
 }
 
-impl GpuMesh {
+impl<Allocation: allocators::Allocation> GpuMesh<Allocation> {
     pub unsafe fn upload(
         &mut self,
         cx: &mut Cx,

@@ -1,14 +1,14 @@
 use ash::vk;
 
 use super::{
-    cx::Cx,
+    allocators::BuddyAllocation,
     memory::{GpuAllocation, GpuMemory},
 };
 
 #[derive(Debug)]
 pub struct Image {
     pub raw: vk::Image,
-    pub allocation: Option<GpuAllocation>,
+    pub allocation: Option<GpuAllocation<BuddyAllocation>>,
     pub info: vk::ImageCreateInfo,
 }
 

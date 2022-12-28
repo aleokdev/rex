@@ -1,22 +1,24 @@
 use std::num::NonZeroU64;
 
-use crate::{abs::util::align, renderer::abs::util::align_nonzero};
+use crate::renderer::abs::util::align_nonzero;
+
+use super::OutOfMemory;
 
 /// Allocation information from a `BuddyAllocator` allocation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct BuddyAllocation {
     offset: u64,
-    size: u64,
+    size: NonZeroU64,
     index: usize,
 }
 
-impl BuddyAllocation {
-    pub fn offset(&self) -> u64 {
+impl super::Allocation for BuddyAllocation {
+    fn offset(&self) -> u64 {
         self.offset
     }
 
-    pub fn size(&self) -> u64 {
-        self.size
+    fn size(&self) -> u64 {
+        self.size.get()
     }
 }
 
@@ -57,7 +59,7 @@ impl BuddyAllocator {
     /// - `max_order` specifies the max allocatable order.
     /// - `o0_size` specifies the physical size of a block of order 0.
     pub fn new(max_order: u8, o0_size: u64) -> Self {
-        let mut max_level = max_order + 1;
+        let max_level = max_order + 1;
         let mut blocks = vec![Block::new(0); Self::blocks_for_level(max_level)];
         let mut i = 0;
         for o in 0..max_level {
@@ -70,62 +72,6 @@ impl BuddyAllocator {
             o0_size,
             max_order,
         }
-    }
-
-    /// Allocates memory of physical size `size`.
-    pub fn allocate(&mut self, size: NonZeroU64) -> Option<BuddyAllocation> {
-        let aligned = if let Some(o0_size) = NonZeroU64::new(self.o0_size) {
-            align_nonzero(o0_size, size)
-        } else {
-            size
-        };
-        let order = Self::order_of(size, self.o0_size);
-
-        let root = self.read_block(0);
-        if root == 0 || root - 1 < order {
-            // root == 0: root is allocated, i.e., there is 0 memory left.
-            // root - 1 < order: greatest available order cannot satisfy req allocation.
-            return None;
-        }
-        // past this point we know that there is enough memory for req allocation.
-
-        // start from the top.
-        // keep going down until we hit a block that matches order.
-        let max_level = self.max_order - order;
-        let mut offset = 0; // physical offset into blocks
-        let mut i = 0; // current index
-        for level in 0..max_level {
-            let i_parent = i;
-            let i_left = Self::left_child(i_parent);
-            let left = self.read_block(i_left);
-
-            // check if left can satsify req allocation
-            if left != 0 && left - 1 >= order {
-                i = i_left;
-            } else {
-                // otherwise, we know for certain that the right must then be able to
-                // because the parent's order said it could (which is the max of left/right)
-                i = i_left + 1;
-                offset += 1 << ((self.max_order - level - 1) as u64);
-            }
-        }
-
-        self.write_block(i, 0);
-        self.update(i, max_level);
-        Some(BuddyAllocation {
-            offset: self.o0_size * offset,
-            size: aligned.get(),
-            index: i,
-        })
-    }
-
-    /// Deallocates some previously allocated memory.
-    pub fn deallocate(&mut self, alloc: BuddyAllocation) {
-        // deallocation routine is very simple because we have
-        // the luxury of storing index with the allocation
-        let order = Self::order_of(NonZeroU64::new(alloc.size).unwrap(), self.o0_size); // HACK: Use NonZeroU64 in alloc data instead
-        self.write_block(alloc.index, order + 1);
-        self.update(alloc.index, self.max_order - order);
     }
 
     fn read_block(&self, i: usize) -> u8 {
@@ -193,8 +139,88 @@ impl Block {
     }
 }
 
+impl super::Allocator for BuddyAllocator {
+    type Allocation = BuddyAllocation;
+
+    fn allocate(
+        &mut self,
+        size: NonZeroU64,
+        alignment: NonZeroU64,
+    ) -> Result<Self::Allocation, OutOfMemory> {
+        // If the alignment is a multiple of the minimum block size, then we're good to go since the
+        // offset can be aligned
+        // If the minimum block size is a multiple of the alignment, then we're also good to go and
+        // we don't need to make any adjustments
+        // Otherwise, we theorically *could* align the result, but we're leaving it unimplemented
+        // for now
+        assert!(
+            self.o0_size % alignment.get() == 0 || alignment.get() % self.o0_size == 0,
+            "buddy allocator cannot provide allocations when the alignment given is not a multiple of the minimum block size or viceversa"
+        );
+
+        // Our current strategy for alignment is to allocate a block as big as a multiple of the
+        // alignment.
+        // This will guarantee alignment but will waste space.
+        let aligned = align_nonzero(alignment, size);
+        let order = Self::order_of(size, self.o0_size);
+
+        let root = self.read_block(0);
+        if root == 0 || root - 1 < order {
+            // root == 0: root is allocated, i.e., there is 0 memory left.
+            // root - 1 < order: greatest available order cannot satisfy req allocation.
+            return Err(OutOfMemory);
+        }
+        // past this point we know that there is enough memory for req allocation.
+
+        // start from the top.
+        // keep going down until we hit a block that matches order.
+        let max_level = self.max_order - order;
+        let mut offset = 0; // physical offset into blocks
+        let mut i = 0; // current index
+        for level in 0..max_level {
+            let i_parent = i;
+            let i_left = Self::left_child(i_parent);
+            let left = self.read_block(i_left);
+
+            // check if left can satsify req allocation
+            if left != 0 && left - 1 >= order {
+                i = i_left;
+            } else {
+                // otherwise, we know for certain that the right must then be able to
+                // because the parent's order said it could (which is the max of left/right)
+                i = i_left + 1;
+                offset += 1 << ((self.max_order - level - 1) as u64);
+            }
+        }
+
+        self.write_block(i, 0);
+        self.update(i, max_level);
+        Ok(BuddyAllocation {
+            offset: self.o0_size * offset,
+            size: aligned,
+            index: i,
+        })
+    }
+
+    fn from_properties(min_alloc: u64, capacity: NonZeroU64) -> Self {
+        Self::new(Self::order_of(capacity, min_alloc), min_alloc)
+    }
+}
+
+impl super::Deallocator for BuddyAllocator {
+    fn deallocate(&mut self, alloc: &Self::Allocation) {
+        // deallocation routine is very simple because we have
+        // the luxury of storing index with the allocation
+        let order = Self::order_of(alloc.size, self.o0_size);
+        self.write_block(alloc.index, order + 1);
+        self.update(alloc.index, self.max_order - order);
+    }
+}
+
 #[cfg(test)]
 mod test {
+    use crate::renderer::abs::allocators::Allocator;
+
     use super::BuddyAllocator;
     use nonzero_ext::nonzero;
 
@@ -235,7 +261,7 @@ mod test {
         //  1   2
         // 0 1 1 1
         let mut allocator = BuddyAllocator::new(2, 1);
-        allocator.allocate(nonzero!(1u64));
+        allocator.allocate(nonzero!(1u64), nonzero!(1u64)).unwrap();
         println!("{:?}", allocator);
         assert_eq!(
             allocator.blocks,
@@ -252,9 +278,9 @@ mod test {
         //  0   1
         // 0 0 0 1
         let mut allocator = BuddyAllocator::new(2, 1);
-        allocator.allocate(nonzero!(1u64));
-        allocator.allocate(nonzero!(1u64));
-        allocator.allocate(nonzero!(1u64));
+        allocator.allocate(nonzero!(1u64), nonzero!(1u64)).unwrap();
+        allocator.allocate(nonzero!(1u64), nonzero!(1u64)).unwrap();
+        allocator.allocate(nonzero!(1u64), nonzero!(1u64)).unwrap();
         println!("{:?}", allocator);
         assert_eq!(
             allocator.blocks,
@@ -271,8 +297,8 @@ mod test {
         //  1   0
         // 0 1 1 1
         let mut allocator = BuddyAllocator::new(2, 1);
-        allocator.allocate(nonzero!(1u64));
-        allocator.allocate(nonzero!(2u64));
+        allocator.allocate(nonzero!(1u64), nonzero!(1u64)).unwrap();
+        allocator.allocate(nonzero!(2u64), nonzero!(1u64)).unwrap();
         println!("{:?}", allocator);
         assert_eq!(
             allocator.blocks,
@@ -281,6 +307,22 @@ mod test {
                 .map(|order| super::Block { order })
                 .collect::<Vec<_>>()
         )
+    }
+
+    #[test]
+    fn allocate_aligned() {
+        let mut allocator = BuddyAllocator::new(5, 8);
+        let a1 = allocator.allocate(nonzero!(1u64), nonzero!(16u64)).unwrap();
+        assert_eq!(a1.offset % 16, 0);
+        let a2 = allocator
+            .allocate(nonzero!(32u64), nonzero!(32u64))
+            .unwrap();
+        assert_eq!(a2.offset % 32, 0);
+        let a3 = allocator
+            .allocate(nonzero!(33u64), nonzero!(32u64))
+            .unwrap();
+        assert_eq!(a3.offset % 32, 0);
+        println!("{:?}", allocator);
     }
 
     // TODO: Test deallocation
