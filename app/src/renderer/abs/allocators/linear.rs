@@ -32,6 +32,7 @@ impl LinearAllocator {
             Ok(Allocation {
                 offset: self.cursor_offset - size,
                 size,
+                data: todo!(), // HACK
             })
         }
     }

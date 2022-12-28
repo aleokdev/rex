@@ -5,19 +5,11 @@ use super::{
     util::align,
 };
 use ash::vk;
-use std::{collections::HashMap, ffi::c_void};
+use std::{collections::HashMap, ffi::c_void, num::NonZeroU64};
 
 const DEVICE_BLOCK_SIZE: u64 = 256 * 1024 * 1024;
 const HOST_BLOCK_SIZE: u64 = 64 * 1024 * 1024;
 const MIN_ALLOC_SIZE: u64 = 1024;
-
-pub const fn log2_ceil(x: u64) -> u32 {
-    u64::BITS - x.leading_zeros()
-}
-
-pub const fn level_count(size: u64, min_alloc: u64) -> u8 {
-    log2_ceil(size / min_alloc) as u8
-}
 
 /// A general-purpose space allocator. May be [linear](LinearAllocator) or a [buddy allocator](BuddyAllocator).
 #[derive(Debug, Clone)]
@@ -33,7 +25,7 @@ impl Allocator {
             Allocator::Linear(allocator) => allocator.allocate(size),
             Allocator::Buddy(allocator) => {
                 allocator
-                    .allocate(size)
+                    .allocate(NonZeroU64::new(size).unwrap()) // HACK
                     .ok_or_else(|| OutOfMemory)
                     .map(|alloc| Allocation {
                         offset: alloc.offset(),
@@ -360,7 +352,7 @@ impl GpuMemory {
                 block_size,
                 mapped,
                 default_allocator: Allocator::Buddy(BuddyAllocator::new(
-                    BuddyAllocator::order_of(block_size / MIN_ALLOC_SIZE),
+                    BuddyAllocator::order_of(NonZeroU64::new(block_size).unwrap(), MIN_ALLOC_SIZE),
                     MIN_ALLOC_SIZE,
                 )),
             });
@@ -401,7 +393,10 @@ impl GpuMemory {
                 block_size: DEVICE_BLOCK_SIZE,
                 mapped: false,
                 default_allocator: Allocator::Buddy(BuddyAllocator::new(
-                    BuddyAllocator::order_of(DEVICE_BLOCK_SIZE / MIN_ALLOC_SIZE),
+                    BuddyAllocator::order_of(
+                        NonZeroU64::new(DEVICE_BLOCK_SIZE).unwrap(),
+                        MIN_ALLOC_SIZE,
+                    ),
                     MIN_ALLOC_SIZE,
                 )),
             });

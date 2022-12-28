@@ -1,9 +1,10 @@
 use std::ffi::{CStr, CString};
+use std::num::NonZeroU64;
 
 use crate::renderer::abs::allocators::Allocation;
 
 use super::allocators::BuddyAllocator;
-use super::memory::{level_count, log2_ceil, Allocator, GpuAllocation, GpuMemory, MemoryUsage};
+use super::memory::{Allocator, GpuAllocation, GpuMemory, MemoryUsage};
 use ash::extensions::ext::DebugUtils;
 use ash::vk::{self, Handle};
 
@@ -98,7 +99,7 @@ impl BufferArena {
             usage,
             mapped,
             default_allocator: Allocator::Buddy(BuddyAllocator::new(
-                BuddyAllocator::order_of(info.size / min_alloc),
+                BuddyAllocator::order_of(NonZeroU64::new(info.size).unwrap(), min_alloc),
                 min_alloc,
             )),
             alignment,
@@ -116,7 +117,7 @@ impl BufferArena {
         assert!(size <= self.info.size);
 
         for (buffer, allocator) in &mut self.buffers {
-            match allocator.allocate(buffer.allocation.size, size, self.alignment) {
+            match allocator.allocate(size, self.alignment) {
                 Ok(Allocation { offset, size, data }) => {
                     return Ok(BufferSlice {
                         buffer: buffer.clone(),

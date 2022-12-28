@@ -1,4 +1,6 @@
-use crate::abs::util::align;
+use std::num::NonZeroU64;
+
+use crate::{abs::util::align, renderer::abs::util::align_nonzero};
 
 /// Allocation information from a `BuddyAllocator` allocation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -71,9 +73,13 @@ impl BuddyAllocator {
     }
 
     /// Allocates memory of physical size `size`.
-    pub fn allocate(&mut self, size: u64) -> Option<BuddyAllocation> {
-        let aligned = align(self.o0_size, size);
-        let order = Self::order_of(aligned / self.o0_size);
+    pub fn allocate(&mut self, size: NonZeroU64) -> Option<BuddyAllocation> {
+        let aligned = if let Some(o0_size) = NonZeroU64::new(self.o0_size) {
+            align_nonzero(o0_size, size)
+        } else {
+            size
+        };
+        let order = Self::order_of(size, self.o0_size);
 
         let root = self.read_block(0);
         if root == 0 || root - 1 < order {
@@ -83,16 +89,6 @@ impl BuddyAllocator {
         }
         // past this point we know that there is enough memory for req allocation.
 
-        // fast path: allocating all of it
-        if root - 1 == order {
-            self.write_block(0, 0);
-            return Some(BuddyAllocation {
-                offset: 0,
-                size: aligned,
-                index: 0,
-            });
-        }
-
         // start from the top.
         // keep going down until we hit a block that matches order.
         let max_level = self.max_order - order;
@@ -100,8 +96,7 @@ impl BuddyAllocator {
         let mut i = 0; // current index
         for level in 0..max_level {
             let i_parent = i;
-            let parent = self.read_block(i_parent);
-            let i_left = Self::left_child(i);
+            let i_left = Self::left_child(i_parent);
             let left = self.read_block(i_left);
 
             // check if left can satsify req allocation
@@ -119,7 +114,7 @@ impl BuddyAllocator {
         self.update(i, max_level);
         Some(BuddyAllocation {
             offset: self.o0_size * offset,
-            size: aligned,
+            size: aligned.get(),
             index: i,
         })
     }
@@ -128,7 +123,7 @@ impl BuddyAllocator {
     pub fn deallocate(&mut self, alloc: BuddyAllocation) {
         // deallocation routine is very simple because we have
         // the luxury of storing index with the allocation
-        let order = Self::order_of(alloc.size / self.o0_size);
+        let order = Self::order_of(NonZeroU64::new(alloc.size).unwrap(), self.o0_size); // HACK: Use NonZeroU64 in alloc data instead
         self.write_block(alloc.index, order + 1);
         self.update(alloc.index, self.max_order - order);
     }
@@ -169,18 +164,19 @@ impl BuddyAllocator {
         ((i + 1) >> 1) - 1
     }
 
-    pub const fn order_of(x: u64) -> u8 {
-        if x == 0 {
-            return 0;
-        }
-        let mut i = x;
-        let mut log2 = 0;
-        while i > 0 {
-            i >>= 1;
-            log2 += 1;
-        }
-        log2
+    pub fn order_of(size: NonZeroU64, o0_size: u64) -> u8 {
+        // SAFETY: ceil div of any number that is not zero will always be bigger than 0.
+        let o0_blocks_needed = unsafe { NonZeroU64::new_unchecked(div_ceil(size.get(), o0_size)) };
+        log2_ceil(o0_blocks_needed) as u8
     }
+}
+
+fn div_ceil(a: u64, b: u64) -> u64 {
+    (a + b - 1) / b
+}
+
+pub const fn log2_ceil(x: NonZeroU64) -> u32 {
+    u64::BITS - (x.get() - 1).leading_zeros()
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -200,22 +196,92 @@ impl Block {
 #[cfg(test)]
 mod test {
     use super::BuddyAllocator;
+    use nonzero_ext::nonzero;
 
     #[test]
     fn empty() {
         let allocator = BuddyAllocator::new(4, 1);
         println!("{:?}", allocator);
+        assert_eq!(
+            allocator.blocks,
+            vec![
+                5, 4, 4, 3, 3, 3, 3, 2, 2, 2, 2, 2, 2, 2, 2, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
+                1, 1, 1
+            ]
+            .into_iter()
+            .map(|order| super::Block { order })
+            .collect::<Vec<_>>()
+        )
     }
 
     #[test]
-    fn allocate() {
+    fn order() {
+        assert_eq!(BuddyAllocator::order_of(nonzero!(1u64), 1), 0);
+        assert_eq!(
+            BuddyAllocator::order_of(nonzero!(100u64), 1),
+            // Needs at least 100 o0 blocks -> 128 -> 2^7
+            7
+        );
+        assert_eq!(
+            BuddyAllocator::order_of(nonzero!(50u64), 10),
+            // Needs at least 5 o0 blocks -> 8 -> 2^3
+            3
+        );
+    }
+
+    #[test]
+    fn allocate_single() {
+        //    2
+        //  1   2
+        // 0 1 1 1
+        let mut allocator = BuddyAllocator::new(2, 1);
+        allocator.allocate(nonzero!(1u64));
+        println!("{:?}", allocator);
+        assert_eq!(
+            allocator.blocks,
+            vec![2, 1, 2, 0, 1, 1, 1]
+                .into_iter()
+                .map(|order| super::Block { order })
+                .collect::<Vec<_>>()
+        )
+    }
+
+    #[test]
+    fn allocate_small() {
         //    1
         //  0   1
         // 0 0 0 1
-        let mut allocator = BuddyAllocator::new(3, 1);
-        allocator.allocate(0);
-        allocator.allocate(0);
-        allocator.allocate(0);
+        let mut allocator = BuddyAllocator::new(2, 1);
+        allocator.allocate(nonzero!(1u64));
+        allocator.allocate(nonzero!(1u64));
+        allocator.allocate(nonzero!(1u64));
         println!("{:?}", allocator);
+        assert_eq!(
+            allocator.blocks,
+            vec![1, 0, 1, 0, 0, 0, 1]
+                .into_iter()
+                .map(|order| super::Block { order })
+                .collect::<Vec<_>>()
+        )
     }
+
+    #[test]
+    fn allocate_mixed() {
+        //    1
+        //  1   0
+        // 0 1 1 1
+        let mut allocator = BuddyAllocator::new(2, 1);
+        allocator.allocate(nonzero!(1u64));
+        allocator.allocate(nonzero!(2u64));
+        println!("{:?}", allocator);
+        assert_eq!(
+            allocator.blocks,
+            vec![1, 1, 0, 0, 1, 1, 1]
+                .into_iter()
+                .map(|order| super::Block { order })
+                .collect::<Vec<_>>()
+        )
+    }
+
+    // TODO: Test deallocation
 }
