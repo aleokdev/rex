@@ -9,6 +9,7 @@ use super::abs::{
     mesh::GpuIndex,
 };
 use ash::vk;
+use glam::Vec4;
 use nonzero_ext::{nonzero, NonZeroAble};
 
 /// Represents an in-flight render frame.
@@ -170,11 +171,12 @@ impl Renderer {
             None,
         )?;
 
+        // TODO: Use struct for depicting uniform
         let uniforms = arenas.uniform.suballocate(
             &mut cx.memory,
             cx.device.handle(),
             &cx.debug_utils_loader,
-            (std::mem::size_of::<[f32; 16]>() as u64)
+            (std::mem::size_of::<[f32; 36]>() as u64)
                 .into_nonzero()
                 .unwrap(),
         )?;
@@ -185,7 +187,7 @@ impl Renderer {
                 &[vk::DescriptorBufferInfo::builder()
                     .buffer(uniforms.buffer.raw)
                     .offset(uniforms.offset)
-                    .range(std::mem::size_of::<[f32; 16]>() as u64)
+                    .range(std::mem::size_of::<[f32; 36]>() as u64)
                     .build()],
                 vk::DescriptorType::UNIFORM_BUFFER,
                 vk::ShaderStageFlags::VERTEX,
@@ -404,14 +406,25 @@ impl Renderer {
         // Upload the cube before rendering if we haven't already.
         let cube = self
             .cube
-            .get_or_insert_with(|| Self::setup_cube(cx, &mut self.arenas, &mut frame).unwrap());
+            .get_or_insert_with(|| Self::setup_mesh(cx, &mut self.arenas, &mut frame).unwrap());
 
-        // Upload the camera uniform PV matrix for this frame.
+        // Upload the uniforms for this frame.
+        let p = world.camera.proj().to_cols_array();
+        let v = world.camera.view().to_cols_array();
+        let pos = Vec4::from((world.camera.position(), 0.)).to_array();
+        let uniforms: [f32; 36] = p
+            .into_iter()
+            .chain(v.into_iter())
+            .chain(pos.into_iter())
+            .collect::<Vec<_>>()
+            .try_into()
+            .unwrap();
+
         abs::memory::cmd_stage(
             &cx.device,
             &mut frame.allocator,
             frame.cmd,
-            &(world.camera.proj() * world.camera.view()).to_cols_array(),
+            &uniforms,
             &self.uniforms,
         )?
         .name(
@@ -523,54 +536,35 @@ impl Renderer {
         Ok(())
     }
 
-    unsafe fn setup_cube(
+    unsafe fn setup_mesh(
         cx: &mut abs::Cx,
         arenas: &mut Arenas,
         frame: &mut Frame,
     ) -> anyhow::Result<abs::mesh::GpuMesh> {
-        let vertices = [
-            abs::mesh::GpuVertex {
-                position: [0., 0., 1.],
-                normal: [0., 0., 0.],
+        let model = tobj::load_obj(
+            "app/res/suzanne.obj",
+            &tobj::LoadOptions {
+                ignore_lines: true,
+                ignore_points: true,
+                single_index: true,
+                triangulate: true,
             },
-            abs::mesh::GpuVertex {
-                position: [1., 0., 1.],
-                normal: [0., 0., 0.],
-            },
-            abs::mesh::GpuVertex {
-                position: [0., 1., 1.],
-                normal: [0., 0., 0.],
-            },
-            abs::mesh::GpuVertex {
-                position: [1., 1., 1.],
-                normal: [0., 0., 0.],
-            },
-            abs::mesh::GpuVertex {
-                position: [0., 0., 0.],
-                normal: [0., 0., 0.],
-            },
-            abs::mesh::GpuVertex {
-                position: [1., 0., 0.],
-                normal: [0., 0., 0.],
-            },
-            abs::mesh::GpuVertex {
-                position: [0., 1., 0.],
-                normal: [0., 0., 0.],
-            },
-            abs::mesh::GpuVertex {
-                position: [1., 1., 0.],
-                normal: [0., 0., 0.],
-            },
-        ];
-
-        let indices = [
-            2, 6, 7, 2, 3, 7, //Top
-            0, 4, 5, 0, 1, 5, //Bottom
-            0, 2, 6, 0, 4, 6, //Left
-            1, 3, 7, 1, 5, 7, //Right
-            0, 2, 3, 0, 1, 3, //Front
-            4, 6, 7, 4, 5, 7, //Back
-        ];
+        )?
+        .0
+        .into_iter()
+        .next()
+        .unwrap();
+        let mesh = model.mesh;
+        let vertices = mesh
+            .positions
+            .chunks_exact(3)
+            .zip(mesh.normals.chunks_exact(3))
+            .map(|(position, normal)| abs::mesh::GpuVertex {
+                normal: normal.try_into().unwrap(),
+                position: position.try_into().unwrap(),
+            })
+            .collect::<Vec<_>>();
+        let indices = mesh.indices;
 
         let vertices_gpu = arenas.vertex.suballocate(
             &mut cx.memory,
@@ -590,15 +584,15 @@ impl Renderer {
                 .unwrap(),
         )?;
 
-        let mut cube = abs::mesh::GpuMesh {
+        let mut mesh = abs::mesh::GpuMesh {
             indices: indices_gpu,
             vertices: vertices_gpu,
             vertex_count: indices.len() as u32,
         };
 
-        cube.upload(cx, &mut frame.allocator, frame.cmd, &vertices, &indices)?;
+        mesh.upload(cx, &mut frame.allocator, frame.cmd, &vertices, &indices)?;
 
-        Ok(cube)
+        Ok(mesh)
     }
 
     pub unsafe fn destroy(mut self, cx: &mut abs::Cx) -> anyhow::Result<()> {
