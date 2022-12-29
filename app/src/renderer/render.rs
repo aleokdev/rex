@@ -2,8 +2,14 @@ use std::ffi::CStr;
 
 use crate::{renderer::abs::mesh::GpuVertex, world::World};
 
-use super::abs::{self, memory::GpuMemory, Cx};
+use super::abs::{
+    self,
+    allocators::{BuddyAllocation, BuddyAllocator},
+    memory::GpuMemory,
+    mesh::GpuIndex,
+};
 use ash::vk;
+use nonzero_ext::{nonzero, NonZeroAble};
 
 /// Represents an in-flight render frame.
 pub struct Frame {
@@ -73,7 +79,7 @@ pub struct Renderer {
     pub framebuffers: Vec<vk::Framebuffer>,
 
     pub cube: Option<abs::mesh::GpuMesh>,
-    pub uniforms: abs::buffer::BufferSlice,
+    pub uniforms: abs::buffer::BufferSlice<BuddyAllocation>,
     pub uniform_set: vk::DescriptorSet,
 
     pub frames: [Option<Frame>; Self::FRAME_OVERLAP],
@@ -88,7 +94,6 @@ impl Renderer {
         let mut ds_layout_cache = abs::descriptor::DescriptorLayoutCache::new(cx);
 
         let mut arenas = Arenas::new(
-            &cx,
             &cx.instance
                 .get_physical_device_properties(cx.physical_device)
                 .limits,
@@ -169,7 +174,9 @@ impl Renderer {
             &mut cx.memory,
             cx.device.handle(),
             &cx.debug_utils_loader,
-            std::mem::size_of::<[f32; 16]>() as u64,
+            (std::mem::size_of::<[f32; 16]>() as u64)
+                .into_nonzero()
+                .unwrap(),
         )?;
 
         let (uniform_set, uniform_set_layout) = abs::descriptor::DescriptorBuilder::new()
@@ -469,7 +476,7 @@ impl Renderer {
             frame.cmd,
             cube.indices.buffer.raw,
             0,
-            vk::IndexType::UINT32,
+            GpuIndex::index_type(),
         );
         cx.device
             .cmd_bind_vertex_buffers(frame.cmd, 0, &[cube.vertices.buffer.raw], &[0]);
@@ -569,14 +576,18 @@ impl Renderer {
             &mut cx.memory,
             cx.device.handle(),
             &cx.debug_utils_loader,
-            std::mem::size_of_val(&vertices) as u64,
+            (std::mem::size_of_val(&vertices) as u64)
+                .into_nonzero()
+                .unwrap(),
         )?;
 
         let indices_gpu = arenas.index.suballocate(
             &mut cx.memory,
             cx.device.handle(),
             &cx.debug_utils_loader,
-            std::mem::size_of_val(&indices) as u64,
+            (std::mem::size_of_val(&indices) as u64)
+                .into_nonzero()
+                .unwrap(),
         )?;
 
         let mut cube = abs::mesh::GpuMesh {
@@ -627,40 +638,40 @@ impl Renderer {
 }
 
 pub struct Arenas {
-    pub vertex: abs::buffer::BufferArena,
-    pub index: abs::buffer::BufferArena,
-    pub uniform: abs::buffer::BufferArena,
-    pub scratch: abs::buffer::BufferArena,
+    pub vertex: abs::buffer::BufferArena<BuddyAllocator>,
+    pub index: abs::buffer::BufferArena<BuddyAllocator>,
+    pub uniform: abs::buffer::BufferArena<BuddyAllocator>,
+    pub scratch: abs::buffer::BufferArena<BuddyAllocator>,
 }
 
 impl Arenas {
-    pub fn new(cx: &Cx, limits: &vk::PhysicalDeviceLimits) -> Self {
+    pub fn new(limits: &vk::PhysicalDeviceLimits) -> Self {
         Arenas {
-            vertex: abs::buffer::BufferArena::new_list(
+            vertex: abs::buffer::BufferArena::new(
                 vk::BufferCreateInfo::builder()
                     .size(64 * 1024 * std::mem::size_of::<abs::mesh::GpuVertex>() as u64)
                     .usage(vk::BufferUsageFlags::TRANSFER_DST | vk::BufferUsageFlags::VERTEX_BUFFER)
                     .sharing_mode(vk::SharingMode::EXCLUSIVE)
                     .build(),
                 abs::memory::MemoryUsage::Gpu,
-                1,
+                GpuVertex::buffer_alignment_required(),
                 false,
                 256 * std::mem::size_of::<abs::mesh::GpuVertex>() as u64,
                 cstr::cstr!("Vertex buffer arena").to_owned(),
             ),
-            index: abs::buffer::BufferArena::new_list(
+            index: abs::buffer::BufferArena::new(
                 vk::BufferCreateInfo::builder()
-                    .size(64 * 1024 * std::mem::size_of::<u32>() as u64)
+                    .size(64 * 1024 * std::mem::size_of::<GpuIndex>() as u64)
                     .usage(vk::BufferUsageFlags::TRANSFER_DST | vk::BufferUsageFlags::INDEX_BUFFER)
                     .sharing_mode(vk::SharingMode::EXCLUSIVE)
                     .build(),
                 abs::memory::MemoryUsage::Gpu,
-                1,
+                GpuIndex::buffer_alignment_required(),
                 false,
-                256 * std::mem::size_of::<u32>() as u64,
+                256 * std::mem::size_of::<GpuIndex>() as u64,
                 cstr::cstr!("Index buffer arena").to_owned(),
             ),
-            uniform: abs::buffer::BufferArena::new_list(
+            uniform: abs::buffer::BufferArena::new(
                 vk::BufferCreateInfo::builder()
                     .size(64 * 128 * 1024)
                     .usage(
@@ -669,19 +680,22 @@ impl Arenas {
                     .sharing_mode(vk::SharingMode::EXCLUSIVE)
                     .build(),
                 abs::memory::MemoryUsage::Gpu,
-                limits.min_uniform_buffer_offset_alignment,
+                limits
+                    .min_uniform_buffer_offset_alignment
+                    .into_nonzero()
+                    .unwrap(),
                 false,
                 128,
                 cstr::cstr!("Uniform buffer arena").to_owned(),
             ),
-            scratch: abs::buffer::BufferArena::new_list(
+            scratch: abs::buffer::BufferArena::new(
                 vk::BufferCreateInfo::builder()
                     .size(64 * 128 * 1024)
                     .usage(vk::BufferUsageFlags::TRANSFER_SRC)
                     .sharing_mode(vk::SharingMode::EXCLUSIVE)
                     .build(),
                 abs::memory::MemoryUsage::CpuToGpu,
-                1,
+                nonzero!(1u64),
                 true,
                 128,
                 cstr::cstr!("Scratch buffer arena").to_owned(),

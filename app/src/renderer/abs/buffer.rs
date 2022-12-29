@@ -1,29 +1,20 @@
 use std::ffi::{CStr, CString};
+use std::num::NonZeroU64;
 
-use super::memory::OutOfMemory;
-use super::{
-    buddy::BuddyAllocator,
-    memory::{level_count, log2_ceil, Allocator, GpuAllocation, GpuMemory, MemoryUsage},
-};
+use super::allocators::{self, BuddyAllocation, BuddyAllocator};
+use super::memory::{GpuAllocation, GpuMemory, MemoryUsage};
 use ash::extensions::ext::DebugUtils;
 use ash::vk::{self, Handle};
+use nonzero_ext::NonZeroAble;
 
 #[derive(Debug, Clone)]
-pub struct Buffer {
+pub struct Buffer<Allocation: allocators::Allocation> {
     pub raw: vk::Buffer,
     pub info: vk::BufferCreateInfo,
-    pub allocation: GpuAllocation,
+    pub allocation: GpuAllocation<Allocation>,
 }
 
-impl Buffer {
-    pub fn null() -> Self {
-        Buffer {
-            raw: vk::Buffer::null(),
-            info: Default::default(),
-            allocation: GpuAllocation::null(),
-        }
-    }
-
+impl<Allocation: allocators::Allocation> Buffer<Allocation> {
     pub unsafe fn name(
         &self,
         device: vk::Device,
@@ -39,7 +30,9 @@ impl Buffer {
         )?;
         Ok(())
     }
+}
 
+impl Buffer<BuddyAllocation> {
     pub unsafe fn destroy(
         self,
         device: &ash::Device,
@@ -49,45 +42,27 @@ impl Buffer {
         // (assert_eq!(self.block(index - 1).order_free, 0); in deallocate)
         // So we skip freeing and just destroy the buffer altogether
 
-        // memory.free_buffer(self.allocation)?;
+        memory.free_buffer(self.allocation)?;
         device.destroy_buffer(self.raw, None);
         Ok(())
     }
 }
 
-pub struct BufferArena {
-    buffers: Vec<(Buffer, Allocator)>,
+pub struct BufferArena<Allocator: allocators::Allocator> {
+    buffers: Vec<(Buffer<Allocator::Allocation>, Allocator)>,
     info: vk::BufferCreateInfo,
     usage: MemoryUsage,
     mapped: bool,
-    default_allocator: Allocator,
-    alignment: u64,
+    alignment: NonZeroU64,
+    min_alloc: u64,
     debug_name: CString,
 }
 
-impl BufferArena {
-    pub fn new_linear(
+impl BufferArena<BuddyAllocator> {
+    pub fn new(
         info: vk::BufferCreateInfo,
         usage: MemoryUsage,
-        mapped: bool,
-        alignment: u64,
-        debug_name: CString,
-    ) -> Self {
-        BufferArena {
-            buffers: vec![],
-            info,
-            usage,
-            mapped,
-            default_allocator: Allocator::Linear { cursor: 0 },
-            alignment,
-            debug_name,
-        }
-    }
-
-    pub fn new_list(
-        info: vk::BufferCreateInfo,
-        usage: MemoryUsage,
-        alignment: u64,
+        alignment: NonZeroU64,
         mapped: bool,
         min_alloc: u64,
         debug_name: CString,
@@ -97,11 +72,8 @@ impl BufferArena {
             info,
             usage,
             mapped,
-            default_allocator: Allocator::Buddy(BuddyAllocator::new(
-                level_count(info.size, min_alloc),
-                log2_ceil(min_alloc) as u8,
-            )),
             alignment,
+            min_alloc,
             debug_name,
         }
     }
@@ -111,29 +83,33 @@ impl BufferArena {
         memory: &mut GpuMemory,
         device: vk::Device,
         utils: &DebugUtils,
-        size: u64,
-    ) -> anyhow::Result<BufferSlice> {
-        assert!(size <= self.info.size);
+        size: NonZeroU64,
+    ) -> anyhow::Result<BufferSlice<BuddyAllocation>> {
+        use allocators::Allocation;
+        use allocators::Allocator;
+        assert!(size.get() <= self.info.size);
 
         for (buffer, allocator) in &mut self.buffers {
-            match allocator.allocate(buffer.allocation.size, size, self.alignment) {
-                Ok((offset, size)) => {
+            match allocator.allocate(size, self.alignment) {
+                Ok(allocation) => {
                     return Ok(BufferSlice {
                         buffer: buffer.clone(),
-                        offset,
-                        size,
+                        offset: allocation.offset(),
+                        size: allocation.size(),
                     })
                 }
-                Err(e) if !e.is::<OutOfMemory>() => {
-                    return Err(e);
+                Err(e) => {
+                    return Err(e.into());
                 }
-                _ => {}
             }
         }
 
         let buffer = memory.allocate_buffer(self.info, self.usage, self.mapped)?;
         buffer.name(device, utils, &self.debug_name)?;
-        self.buffers.push((buffer, self.default_allocator.clone()));
+        self.buffers.push((
+            buffer,
+            Allocator::from_properties(self.min_alloc, self.info.size.into_nonzero().unwrap()),
+        ));
 
         self.suballocate(memory, device, utils, size)
     }
@@ -151,18 +127,8 @@ impl BufferArena {
 }
 
 #[derive(Debug, Clone)]
-pub struct BufferSlice {
-    pub buffer: Buffer,
+pub struct BufferSlice<Allocation: allocators::Allocation> {
+    pub buffer: Buffer<Allocation>,
     pub offset: vk::DeviceAddress,
     pub size: vk::DeviceSize,
-}
-
-impl BufferSlice {
-    pub fn null() -> Self {
-        BufferSlice {
-            buffer: Buffer::null(),
-            offset: 0,
-            size: 0,
-        }
-    }
 }
