@@ -9,7 +9,7 @@ use super::{
 };
 use ash::vk;
 use nonzero_ext::NonZeroAble;
-use std::{collections::HashMap, ffi::c_void, marker::PhantomData, num::NonZeroU64};
+use std::{collections::HashMap, ffi::c_void, num::NonZeroU64};
 
 const DEVICE_BLOCK_SIZE: u64 = 256 * 1024 * 1024;
 const HOST_BLOCK_SIZE: u64 = 64 * 1024 * 1024;

@@ -6,7 +6,7 @@ use super::abs::{
     self,
     allocators::{BuddyAllocation, BuddyAllocator},
     memory::GpuMemory,
-    Cx,
+    mesh::GpuIndex,
 };
 use ash::vk;
 use nonzero_ext::{nonzero, NonZeroAble};
@@ -94,7 +94,6 @@ impl Renderer {
         let mut ds_layout_cache = abs::descriptor::DescriptorLayoutCache::new(cx);
 
         let mut arenas = Arenas::new(
-            &cx,
             &cx.instance
                 .get_physical_device_properties(cx.physical_device)
                 .limits,
@@ -477,7 +476,7 @@ impl Renderer {
             frame.cmd,
             cube.indices.buffer.raw,
             0,
-            vk::IndexType::UINT32,
+            GpuIndex::index_type(),
         );
         cx.device
             .cmd_bind_vertex_buffers(frame.cmd, 0, &[cube.vertices.buffer.raw], &[0]);
@@ -646,7 +645,7 @@ pub struct Arenas {
 }
 
 impl Arenas {
-    pub fn new(cx: &Cx, limits: &vk::PhysicalDeviceLimits) -> Self {
+    pub fn new(limits: &vk::PhysicalDeviceLimits) -> Self {
         Arenas {
             vertex: abs::buffer::BufferArena::new(
                 vk::BufferCreateInfo::builder()
@@ -655,27 +654,21 @@ impl Arenas {
                     .sharing_mode(vk::SharingMode::EXCLUSIVE)
                     .build(),
                 abs::memory::MemoryUsage::Gpu,
-                // From https://registry.khronos.org/vulkan/specs/1.3-extensions/html/chap22.html#fxvertex-input-extraction:
-                // If format is a packed format, attribAddress must be a multiple of the size in
-                // bytes of the whole attribute data type as described in Packed Formats. Otherwise,
-                // attribAddress must be a multiple of the size in bytes of the component type
-                // indicated by format (see Formats).
-                // In our case it's unpacked and the component type size in bytes is 4.
-                nonzero!(4u64),
+                GpuVertex::buffer_alignment_required(),
                 false,
                 256 * std::mem::size_of::<abs::mesh::GpuVertex>() as u64,
                 cstr::cstr!("Vertex buffer arena").to_owned(),
             ),
             index: abs::buffer::BufferArena::new(
                 vk::BufferCreateInfo::builder()
-                    .size(64 * 1024 * std::mem::size_of::<u32>() as u64)
+                    .size(64 * 1024 * std::mem::size_of::<GpuIndex>() as u64)
                     .usage(vk::BufferUsageFlags::TRANSFER_DST | vk::BufferUsageFlags::INDEX_BUFFER)
                     .sharing_mode(vk::SharingMode::EXCLUSIVE)
                     .build(),
                 abs::memory::MemoryUsage::Gpu,
-                nonzero!(4u64),
+                GpuIndex::buffer_alignment_required(),
                 false,
-                256 * std::mem::size_of::<u32>() as u64,
+                256 * std::mem::size_of::<GpuIndex>() as u64,
                 cstr::cstr!("Index buffer arena").to_owned(),
             ),
             uniform: abs::buffer::BufferArena::new(
