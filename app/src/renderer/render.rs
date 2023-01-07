@@ -3,6 +3,7 @@ use std::ffi::CStr;
 use crate::{
     renderer::abs::{
         mesh::GpuVertex,
+        shader::ShaderModule,
         uniforms::{ModelUniform, WorldUniform},
     },
     world::World,
@@ -14,7 +15,7 @@ use super::abs::{
     memory::GpuMemory,
     mesh::GpuIndex,
 };
-use ash::vk;
+use ash::vk::{self};
 use glam::Vec4;
 use nonzero_ext::{nonzero, NonZeroAble};
 
@@ -127,7 +128,7 @@ impl Renderer {
             .build();
 
         let depth_attachment = vk::AttachmentDescription::builder()
-            .format(vk::Format::D32_SFLOAT) // TODO: Do not hardcode D322_SFLOAT for depth/stencil
+            .format(abs::cx::DEPTH_FORMAT)
             .samples(vk::SampleCountFlags::TYPE_1)
             .load_op(vk::AttachmentLoadOp::CLEAR)
             .store_op(vk::AttachmentStoreOp::STORE)
@@ -163,23 +164,23 @@ impl Renderer {
             cx.height,
         )?;
 
-        let vertex_code = include_bytes!("../../res/tri.vert.spv")
-            .chunks(4)
-            .map(|bytes| u32::from_le_bytes(bytes.try_into().unwrap()))
-            .collect::<Vec<_>>();
-        let vertex_shader = cx.device.create_shader_module(
-            &vk::ShaderModuleCreateInfo::builder().code(&vertex_code),
-            None,
-        )?;
+        let vertex_shader =
+            ShaderModule::from_spirv_bytes(include_bytes!("../../res/basic.vert.spv"), &cx.device)?
+                .name(
+                    cx.device.handle(),
+                    &cx.debug_utils_loader,
+                    cstr::cstr!("Basic Vertex shader"),
+                )?
+                .0;
 
-        let fragment_code = include_bytes!("../../res/tri.frag.spv")
-            .chunks(4)
-            .map(|bytes| u32::from_le_bytes(bytes.try_into().unwrap()))
-            .collect::<Vec<_>>();
-        let fragment_shader = cx.device.create_shader_module(
-            &vk::ShaderModuleCreateInfo::builder().code(&fragment_code),
-            None,
-        )?;
+        let fragment_shader =
+            ShaderModule::from_spirv_bytes(include_bytes!("../../res/basic.frag.spv"), &cx.device)?
+                .name(
+                    cx.device.handle(),
+                    &cx.debug_utils_loader,
+                    cstr::cstr!("Basic Fragment shader"),
+                )?
+                .0;
 
         let world_uniform = arenas.uniform.suballocate(
             &mut cx.memory,

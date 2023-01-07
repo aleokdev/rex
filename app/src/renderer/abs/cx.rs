@@ -62,6 +62,8 @@ pub struct Cx {
     pub render_queue: (vk::Queue, u32),
 }
 
+pub const DEPTH_FORMAT: vk::Format = vk::Format::D32_SFLOAT;
+
 pub struct SwapchainData {
     pub swapchain: vk::SwapchainKHR,
     pub images: SwapchainTextures,
@@ -359,7 +361,7 @@ impl Cx {
                     &vk::ImageCreateInfo::builder()
                         .image_type(vk::ImageType::TYPE_2D)
                         .extent(extent)
-                        .format(vk::Format::D32_SFLOAT)
+                        .format(DEPTH_FORMAT)
                         .mip_levels(1)
                         .array_layers(1)
                         .samples(vk::SampleCountFlags::TYPE_1)
@@ -371,7 +373,7 @@ impl Cx {
                     &vk::ImageViewCreateInfo::builder()
                         .image(depth.raw)
                         .view_type(vk::ImageViewType::TYPE_2D)
-                        .format(vk::Format::D32_SFLOAT)
+                        .format(DEPTH_FORMAT)
                         .subresource_range(subresource_range(
                             vk::ImageAspectFlags::DEPTH,
                             0..1,
