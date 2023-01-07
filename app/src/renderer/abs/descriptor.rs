@@ -6,6 +6,8 @@ use super::Cx;
 
 // credit vblanco
 
+/// An utility structure used to manage descriptor pools, allowing allocating descriptor sets with
+/// ease without having to worry too much about resetting and freeing full descriptor pools.
 pub struct DescriptorAllocator {
     device: ash::Device,
     current_pool: vk::DescriptorPool,

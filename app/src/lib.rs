@@ -35,8 +35,8 @@ impl App {
         })
     }
 
-    unsafe fn redraw(&mut self) -> anyhow::Result<()> {
-        self.renderer.draw(&mut self.cx, &self.world)
+    unsafe fn redraw(&mut self, delta: std::time::Duration) -> anyhow::Result<()> {
+        self.renderer.draw(&mut self.cx, &self.world, delta)
     }
 }
 
@@ -161,7 +161,7 @@ pub fn run(width: u32, height: u32) -> anyhow::Result<()> {
                 app.world
                     .camera
                     .move_local_coords(movement * SPEED * delta_s);
-                app.redraw().unwrap();
+                app.redraw(delta).unwrap();
             },
             Event::LoopDestroyed => unsafe {
                 let mut app = application.take().unwrap();

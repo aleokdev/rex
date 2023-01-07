@@ -1,6 +1,12 @@
 use std::ffi::CStr;
 
-use crate::{renderer::abs::mesh::GpuVertex, world::World};
+use crate::{
+    renderer::abs::{
+        mesh::GpuVertex,
+        uniforms::{ModelUniform, WorldUniform},
+    },
+    world::World,
+};
 
 use super::abs::{
     self,
@@ -9,7 +15,7 @@ use super::abs::{
     mesh::GpuIndex,
 };
 use ash::vk;
-use glam::Vec4;
+use glam::{Vec3, Vec4};
 use nonzero_ext::{nonzero, NonZeroAble};
 
 /// Represents an in-flight render frame.
@@ -80,8 +86,12 @@ pub struct Renderer {
     pub framebuffers: Vec<vk::Framebuffer>,
 
     pub cube: Option<abs::mesh::GpuMesh>,
-    pub uniforms: abs::buffer::BufferSlice<BuddyAllocation>,
-    pub uniform_set: vk::DescriptorSet,
+    pub world_uniform: abs::buffer::BufferSlice<BuddyAllocation>,
+    pub world_uniform_set: vk::DescriptorSet,
+    pub model_uniform: abs::buffer::BufferSlice<BuddyAllocation>,
+    pub model_uniform_set: vk::DescriptorSet,
+
+    pub model_rotation: f32,
 
     pub frames: [Option<Frame>; Self::FRAME_OVERLAP],
     pub deletion: Vec<Box<dyn FnOnce(&mut abs::Cx)>>,
@@ -171,31 +181,55 @@ impl Renderer {
             None,
         )?;
 
-        // TODO: Use struct for depicting uniform
-        let uniforms = arenas.uniform.suballocate(
+        let world_uniform = arenas.uniform.suballocate(
             &mut cx.memory,
             cx.device.handle(),
             &cx.debug_utils_loader,
-            (std::mem::size_of::<[f32; 36]>() as u64)
+            (std::mem::size_of::<WorldUniform>() as u64)
                 .into_nonzero()
                 .unwrap(),
         )?;
 
-        let (uniform_set, uniform_set_layout) = abs::descriptor::DescriptorBuilder::new()
-            .bind_buffer(
-                0,
-                &[vk::DescriptorBufferInfo::builder()
-                    .buffer(uniforms.buffer.raw)
-                    .offset(uniforms.offset)
-                    .range(std::mem::size_of::<[f32; 36]>() as u64)
-                    .build()],
-                vk::DescriptorType::UNIFORM_BUFFER,
-                vk::ShaderStageFlags::VERTEX,
-            )
-            .build(cx, &mut ds_allocator, &mut ds_layout_cache)?;
+        let model_uniform = arenas.uniform.suballocate(
+            &mut cx.memory,
+            cx.device.handle(),
+            &cx.debug_utils_loader,
+            (std::mem::size_of::<ModelUniform>() as u64)
+                .into_nonzero()
+                .unwrap(),
+        )?;
+
+        let (world_uniform_set, world_uniform_set_layout) =
+            abs::descriptor::DescriptorBuilder::new()
+                .bind_buffer(
+                    0,
+                    &[vk::DescriptorBufferInfo::builder()
+                        .buffer(world_uniform.buffer.raw)
+                        .offset(world_uniform.offset)
+                        .range(std::mem::size_of::<WorldUniform>() as u64)
+                        .build()],
+                    vk::DescriptorType::UNIFORM_BUFFER,
+                    vk::ShaderStageFlags::VERTEX,
+                )
+                .build(cx, &mut ds_allocator, &mut ds_layout_cache)?;
+
+        let (model_uniform_set, model_uniform_set_layout) =
+            abs::descriptor::DescriptorBuilder::new()
+                .bind_buffer(
+                    0,
+                    &[vk::DescriptorBufferInfo::builder()
+                        .buffer(model_uniform.buffer.raw)
+                        .offset(model_uniform.offset)
+                        .range(std::mem::size_of::<ModelUniform>() as u64)
+                        .build()],
+                    vk::DescriptorType::UNIFORM_BUFFER,
+                    vk::ShaderStageFlags::VERTEX,
+                )
+                .build(cx, &mut ds_allocator, &mut ds_layout_cache)?;
 
         let pipeline_layout = cx.device.create_pipeline_layout(
-            &vk::PipelineLayoutCreateInfo::builder().set_layouts(&[uniform_set_layout]),
+            &vk::PipelineLayoutCreateInfo::builder()
+                .set_layouts(&[world_uniform_set_layout, model_uniform_set_layout]),
             None,
         )?;
 
@@ -302,8 +336,12 @@ impl Renderer {
             framebuffers,
 
             cube: None,
-            uniforms,
-            uniform_set,
+            world_uniform,
+            world_uniform_set,
+            model_uniform,
+            model_uniform_set,
+
+            model_rotation: 0.,
 
             frames: [Some(Frame::new(cx)?), Some(Frame::new(cx)?)],
             deletion: vec![],
@@ -350,7 +388,12 @@ impl Renderer {
             .collect()
     }
 
-    pub unsafe fn draw(&mut self, cx: &mut abs::Cx, world: &World) -> anyhow::Result<()> {
+    pub unsafe fn draw(
+        &mut self,
+        cx: &mut abs::Cx,
+        world: &World,
+        delta: std::time::Duration,
+    ) -> anyhow::Result<()> {
         // Get the next frame to draw onto:
         //      We have a few in-flight frames so the GPU doesn't stay still (And we don't need to
         //      wait too much CPU-side for queue submissions to happen).
@@ -409,28 +452,43 @@ impl Renderer {
             .get_or_insert_with(|| Self::setup_mesh(cx, &mut self.arenas, &mut frame).unwrap());
 
         // Upload the uniforms for this frame.
-        let p = world.camera.proj().to_cols_array();
-        let v = world.camera.view().to_cols_array();
-        let pos = Vec4::from((world.camera.position(), 0.)).to_array();
-        let uniforms: [f32; 36] = p
-            .into_iter()
-            .chain(v.into_iter())
-            .chain(pos.into_iter())
-            .collect::<Vec<_>>()
-            .try_into()
-            .unwrap();
+        let world_uniform = WorldUniform {
+            proj: world.camera.proj(),
+            view: world.camera.view(),
+            camera_pos: Vec4::from((world.camera.position(), 0.)),
+        };
+
+        // Rotate at 1 sec / turn
+        self.model_rotation += delta.as_secs_f32() * std::f32::consts::TAU;
+
+        let model_uniform = ModelUniform {
+            model: glam::Mat4::from_rotation_y(self.model_rotation),
+        };
 
         abs::memory::cmd_stage(
             &cx.device,
             &mut frame.allocator,
             frame.cmd,
-            &uniforms,
-            &self.uniforms,
+            &[world_uniform],
+            &self.world_uniform,
         )?
         .name(
             cx.device.handle(),
             &cx.debug_utils_loader,
             cstr::cstr!("Camera Uniform Scratch Buffer"),
+        )?;
+
+        abs::memory::cmd_stage(
+            &cx.device,
+            &mut frame.allocator,
+            frame.cmd,
+            &[model_uniform],
+            &self.model_uniform,
+        )?
+        .name(
+            cx.device.handle(),
+            &cx.debug_utils_loader,
+            cstr::cstr!("Model Uniform Scratch Buffer"),
         )?;
 
         // Insert a memory barrier to wait until the cube mesh and camera uniform have been uploaded.
@@ -475,13 +533,13 @@ impl Renderer {
             self.pipeline,
         );
 
-        // Bind the camera uniform descriptor set and cube vertex/index buffers.
+        // Bind the camera & model uniform descriptor sets and cube vertex/index buffers.
         cx.device.cmd_bind_descriptor_sets(
             frame.cmd,
             vk::PipelineBindPoint::GRAPHICS,
             self.pipeline_layout,
             0,
-            &[self.uniform_set],
+            &[self.world_uniform_set, self.model_uniform_set],
             &[],
         );
 
