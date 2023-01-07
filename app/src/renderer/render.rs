@@ -15,7 +15,7 @@ use super::abs::{
     mesh::GpuIndex,
 };
 use ash::vk;
-use glam::{Vec3, Vec4};
+use glam::Vec4;
 use nonzero_ext::{nonzero, NonZeroAble};
 
 /// Represents an in-flight render frame.

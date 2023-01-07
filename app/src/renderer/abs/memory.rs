@@ -7,8 +7,10 @@ use super::{
     buffer::{Buffer, BufferSlice},
     image::Image,
 };
-use ash::vk;
+use ash::extensions::ext::DebugUtils;
+use ash::vk::{self, Handle};
 use nonzero_ext::NonZeroAble;
+use std::ffi::CStr;
 use std::{collections::HashMap, ffi::c_void, num::NonZeroU64};
 
 const DEVICE_BLOCK_SIZE: u64 = 256 * 1024 * 1024;
@@ -19,6 +21,24 @@ struct MemoryBlock<Allocator: allocators::Allocator> {
     raw: vk::DeviceMemory,
     allocator: Allocator,
     mapped: *mut c_void,
+}
+
+impl<Allocator: allocators::Allocator> MemoryBlock<Allocator> {
+    pub unsafe fn name(
+        &self,
+        device: vk::Device,
+        utils: &DebugUtils,
+        name: &CStr,
+    ) -> anyhow::Result<()> {
+        utils.debug_utils_set_object_name(
+            device,
+            &vk::DebugUtilsObjectNameInfoEXT::builder()
+                .object_handle(self.raw.as_raw())
+                .object_name(name)
+                .object_type(vk::ObjectType::DEVICE_MEMORY),
+        )?;
+        Ok(())
+    }
 }
 
 struct MemoryType<Allocator: allocators::Allocator> {
@@ -452,6 +472,22 @@ impl<Allocation: allocators::Allocation> GpuAllocation<Allocation> {
 
     pub fn size(&self) -> vk::DeviceSize {
         self.allocation.size().into()
+    }
+
+    pub unsafe fn name(
+        &self,
+        device: vk::Device,
+        utils: &DebugUtils,
+        name: &CStr,
+    ) -> anyhow::Result<()> {
+        utils.debug_utils_set_object_name(
+            device,
+            &vk::DebugUtilsObjectNameInfoEXT::builder()
+                .object_handle(self.memory.as_raw())
+                .object_name(name)
+                .object_type(vk::ObjectType::DEVICE_MEMORY),
+        )?;
+        Ok(())
     }
 }
 

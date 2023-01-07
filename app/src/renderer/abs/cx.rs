@@ -409,9 +409,9 @@ impl Drop for Cx {
             self.swapchain_images
                 .destroy(&self.device, &mut self.memory);
             self.surface_loader.destroy_surface(self.surface, None);
+            self.device.destroy_device(None);
             self.debug_utils_loader
                 .destroy_debug_utils_messenger(self.debug_callback, None);
-            self.device.destroy_device(None);
             self.instance.destroy_instance(None);
         }
     }
