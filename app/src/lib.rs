@@ -1,29 +1,22 @@
-mod renderer;
-mod world;
-
+use common::{Camera, World};
 use glam::Vec3;
-use renderer::{
-    abs,
-    render::{self},
-};
 use winit::{
     dpi::{PhysicalPosition, PhysicalSize},
     event::{ElementState, Event, WindowEvent},
     event_loop::{ControlFlow, EventLoop},
     window::CursorGrabMode,
 };
-use world::{Camera, World};
 
 struct App {
-    pub cx: abs::Cx,
-    pub renderer: render::Renderer,
+    pub cx: renderer::abs::Cx,
+    pub renderer: renderer::Renderer,
     pub world: World,
 }
 
 impl App {
     unsafe fn new(event_loop: &EventLoop<()>, width: u32, height: u32) -> anyhow::Result<Self> {
-        let mut cx = abs::Cx::new(event_loop, width, height)?;
-        let renderer = render::Renderer::new(&mut cx)?;
+        let mut cx = renderer::abs::Cx::new(event_loop, width, height)?;
+        let renderer = renderer::Renderer::new(&mut cx)?;
         let world = World {
             camera: Camera::new(cx.width as f32 / cx.height as f32),
         };

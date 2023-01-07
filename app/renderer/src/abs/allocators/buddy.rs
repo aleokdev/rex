@@ -1,6 +1,6 @@
 use std::num::NonZeroU64;
 
-use crate::renderer::abs::util::align_nonzero;
+use crate::abs::util::align_nonzero;
 
 use super::OutOfMemory;
 
@@ -22,7 +22,7 @@ impl super::Allocation for BuddyAllocation {
     }
 }
 
-/// Bitmap-tree-based [buddy allocator], loosely based on https://github.com/Restioson/buddy-allocator-workshop.
+/// Bitmap-tree-based [buddy allocator], loosely based on <https://github.com/Restioson/buddy-allocator-workshop>.
 ///
 /// [buddy allocator]: https://en.wikipedia.org/wiki/Buddy_memory_allocation
 #[derive(Clone)]
@@ -219,7 +219,7 @@ impl super::Deallocator for BuddyAllocator {
 
 #[cfg(test)]
 mod test {
-    use crate::renderer::abs::allocators::Allocator;
+    use crate::abs::allocators::Allocator;
 
     use super::BuddyAllocator;
     use nonzero_ext::nonzero;

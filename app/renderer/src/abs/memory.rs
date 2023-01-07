@@ -1,4 +1,4 @@
-use crate::renderer::abs::allocators::Deallocator;
+use crate::abs::allocators::Deallocator;
 
 use super::allocators::linear::LinearAllocation;
 use super::allocators::{self, BuddyAllocation, OutOfMemory};

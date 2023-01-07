@@ -1,21 +1,20 @@
+pub mod abs;
+
 use std::ffi::CStr;
 
-use crate::{
-    renderer::abs::{
-        mesh::GpuVertex,
-        shader::ShaderModule,
-        uniforms::{ModelUniform, WorldUniform},
-    },
-    world::World,
+use crate::abs::{
+    mesh::GpuVertex,
+    shader::ShaderModule,
+    uniforms::{ModelUniform, WorldUniform},
 };
 
-use super::abs::{
-    self,
+use abs::{
     allocators::{BuddyAllocation, BuddyAllocator},
     memory::GpuMemory,
     mesh::GpuIndex,
 };
 use ash::vk::{self};
+use common::World;
 use glam::Vec4;
 use nonzero_ext::{nonzero, NonZeroAble};
 
