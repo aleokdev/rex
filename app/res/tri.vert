@@ -20,7 +20,8 @@ void main()
 {
 	vec4 pos = vec4(inPosition, 1);
 	pos = proj * view * model * pos;
+	vec3 normal = mat3(transpose(inverse(model))) * inNormal;
 	vec3 light_dir =  normalize(camera_pos.xyz - pos.xyz);
-	outColor = max(dot(inNormal, light_dir), 0.) * vec3(1.);
+	outColor = max(dot(normal, light_dir), 0.) * vec3(1.);
 	gl_Position = pos;
 }
