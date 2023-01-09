@@ -1,4 +1,5 @@
 mod space;
+pub mod wfc;
 
 use std::{
     fs,

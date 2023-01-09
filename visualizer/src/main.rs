@@ -7,22 +7,59 @@ use ggez::{
     conf::{WindowMode, WindowSetup},
     event,
     glam::*,
-    graphics, input, Context,
+    graphics::{self, DrawMode, Rect},
+    input, Context,
 };
-use rex::Room;
+use rand::seq::IteratorRandom;
+use rex::{
+    wfc::{self, Tile},
+    Room,
+};
 
 struct MainState {
     pos: Vec2,
     scale: f32,
     mesh: graphics::Mesh,
     mesh_producer: Option<mpsc::Receiver<graphics::MeshBuilder>>,
-    nodes: Vec<rex::Node>,
+    wfc: wfc::Context,
 }
 
 impl MainState {
     fn new(path: &std::path::Path, ctx: &mut Context) -> anyhow::Result<MainState> {
-        let nodes = rex::generate_nodes(path)?;
-        let rx = spawn_mesh_builder(nodes.clone());
+        let wfc = wfc::Context::new(vec![
+            Tile::from_rules(wfc::SpatialRuleMap::from_fn(|pos| {
+                match (pos.x, pos.y, pos.z) {
+                    (1, 0, 0) => [0, 1].into_iter().collect(),
+                    (-1, 0, 0) => [0, 1].into_iter().collect(),
+                    (0, 0, _) => [0, 1, 2, 3].into_iter().collect(),
+                    (x, _, z) if x != 0 && z != 0 => [0, 1, 2, 3].into_iter().collect(),
+                    _ => Default::default(),
+                }
+            })),
+            Tile::from_rules(wfc::SpatialRuleMap::from_fn(|pos| {
+                match (pos.x, pos.y, pos.z) {
+                    (1, 0, 0) => [0, 1].into_iter().collect(),
+                    (-1, 0, 0) => [0, 1].into_iter().collect(),
+                    (0, 0, 1) => [3].into_iter().collect(),
+                    (x, _, z) if x != 0 && z != 0 => [0, 1, 2, 3].into_iter().collect(),
+                    _ => Default::default(),
+                }
+            })),
+            Tile::from_rules(wfc::SpatialRuleMap::from_fn(|_pos| {
+                [0, 1, 2, 3].into_iter().collect()
+            })),
+            Tile::from_rules(wfc::SpatialRuleMap::from_fn(|pos| {
+                match (pos.x, pos.y, pos.z) {
+                    (0, 0, 1) => [3].into_iter().collect(),
+                    (0, 0, -1) => [3, 1].into_iter().collect(),
+                    (_, 0, 0) => [0, 1, 2, 3].into_iter().collect(),
+                    (x, _, z) if x != 0 && z != 0 => [0, 1, 2, 3].into_iter().collect(),
+                    _ => Default::default(),
+                }
+            })),
+        ]);
+
+        let rx = spawn_mesh_builder(wfc.clone());
 
         Ok(MainState {
             pos: vec2(-25., -25.),
@@ -35,127 +72,135 @@ impl MainState {
                 },
             ),
             mesh_producer: Some(rx),
-            nodes,
+            wfc,
         })
     }
 }
 
-fn spawn_mesh_builder(nodes: Vec<rex::Node>) -> mpsc::Receiver<graphics::MeshBuilder> {
+fn spawn_mesh_builder(ctx: wfc::Context) -> mpsc::Receiver<graphics::MeshBuilder> {
     let (tx, rx) = mpsc::channel();
     thread::spawn(move || {
-        let start = std::time::Instant::now();
-
-        let mut v4 = rex::RoomPlacer::new(nodes);
+        let mut world = wfc::World::default();
+        world.place(&ctx, 1, glam::IVec3::ZERO).unwrap();
+        world.place(&ctx, 1, glam::ivec3(2, 0, 3)).unwrap();
+        for x in -10..=10 {
+            world.place(&ctx, 2, glam::ivec3(x, 0, 10)).unwrap();
+            world.place(&ctx, 2, glam::ivec3(x, 0, -10)).unwrap();
+        }
+        for z in -9..=9 {
+            world.place(&ctx, 2, glam::ivec3(10, 0, z)).unwrap();
+            world.place(&ctx, 2, glam::ivec3(-10, 0, z)).unwrap();
+        }
+        dbg!(&world.space[&glam::ivec3(0, 0, 9)]);
         let mut rng = rand::thread_rng();
-        let mut iterations = 0;
-
-        loop {
-            match v4.iterate(&mut rng) {
-                ControlFlow::Break(_) => break,
-                ControlFlow::Continue(_) => {}
-            }
-
-            if iterations % 100 == 0 {
-                let mut builder = graphics::MeshBuilder::new();
-                build_room_mesh(&mut builder, v4.rooms()).unwrap();
-                tx.send(builder).unwrap();
-            }
-
-            iterations += 1;
-        }
-        log::info!(
-            "Node creation took {}s in total",
-            (std::time::Instant::now() - start).as_secs_f32()
-        );
-        let start = std::time::Instant::now();
-
-        let (nodes, rooms, space) = v4.build();
-        let mut v4c = rex::CorridorPlacer::new(nodes, rooms, space);
-        let mut iterations = 0;
-
-        loop {
-            match v4c.iterate() {
-                ControlFlow::Break(_) => break,
-                ControlFlow::Continue(_) => {}
-            }
-
-            if iterations % 10 == 0 {
-                let mut builder = graphics::MeshBuilder::new();
-                build_room_mesh(&mut builder, v4c.rooms()).unwrap();
-                build_paths_mesh(&mut builder, v4c.paths()).unwrap();
-                tx.send(builder).unwrap();
-            }
-
-            iterations += 1;
-        }
-        log::info!(
-            "Pathfinding took {}s in total",
-            (std::time::Instant::now() - start).as_secs_f32()
-        );
-        let start = std::time::Instant::now();
-
-        let (_nodes, rooms, paths, space) = v4c.build();
-        let mut v4s = rex::CorridorSimplifier::new(paths, space);
-
-        loop {
-            match v4s.iterate() {
-                ControlFlow::Break(_) => break,
-                ControlFlow::Continue(_) => (),
-            }
-
-            if iterations % 10 == 0 {
-                let mut builder = graphics::MeshBuilder::new();
-                build_room_mesh(&mut builder, &rooms).unwrap();
-                build_paths_mesh(&mut builder, v4s.paths()).unwrap();
-                tx.send(builder).unwrap();
-            }
-
-            iterations += 1;
-        }
-        log::info!(
-            "Path smoothing took {}s in total",
-            (std::time::Instant::now() - start).as_secs_f32()
-        );
 
         let mut builder = graphics::MeshBuilder::new();
-        build_room_mesh(&mut builder, &rooms).unwrap();
-        build_paths_mesh(&mut builder, &v4s.paths()).unwrap();
-        tx.send(builder);
+        build_world_mesh(&mut builder, &world).unwrap();
+        tx.send(builder).unwrap();
+        thread::sleep(std::time::Duration::from_millis(1000));
+        let start = std::time::Instant::now();
+
+        for _ in 0..1000 {
+            let random_min_entropy_pos = match world.least_entropy_positions_2d() {
+                Some(x) => x.choose(&mut rng).unwrap(),
+                None => glam::IVec3::ZERO,
+            };
+            world
+                .collapse(&ctx, &mut rng, random_min_entropy_pos)
+                .unwrap();
+            let mut builder = graphics::MeshBuilder::new();
+            build_world_mesh(&mut builder, &world).unwrap();
+            tx.send(builder).unwrap();
+        }
+
+        let end = std::time::Instant::now();
+        log::info!("Finished collapsing in {:2}s", (end - start).as_secs_f32());
     });
     rx
 }
 
-fn build_room_mesh(builder: &mut graphics::MeshBuilder, rooms: &[Room]) -> anyhow::Result<()> {
-    for room in rooms {
-        if room.mesh.len() > 0 {
-            builder.polyline(
-                graphics::DrawMode::Fill(graphics::FillOptions::default()),
-                &room.mesh,
-                graphics::Color::RED,
-            )?;
-            builder.polygon(
-                graphics::DrawMode::Stroke(graphics::StrokeOptions::default().with_line_width(0.1)),
-                &room.mesh,
-                graphics::Color::WHITE,
-            )?;
+fn build_world_mesh(builder: &mut graphics::MeshBuilder, world: &wfc::World) -> anyhow::Result<()> {
+    for (pos, tile) in world.space.iter() {
+        if pos.y != 0 {
+            continue;
         }
-    }
+        log::info!("{}", pos);
+        match tile {
+            &wfc::SpaceTile::Collapsed(index) => match index {
+                0 => {
+                    builder.rectangle(
+                        DrawMode::fill(),
+                        Rect::new(pos.x as f32, pos.z as f32, 1., 1.),
+                        ggez::graphics::Color::RED,
+                    )?;
+                    builder.line(
+                        &[
+                            [pos.x as f32, pos.z as f32 + 0.5],
+                            [pos.x as f32 + 1.0, pos.z as f32 + 0.5],
+                        ],
+                        0.3,
+                        graphics::Color::BLACK,
+                    )?
+                }
+                1 => {
+                    builder.rectangle(
+                        DrawMode::fill(),
+                        Rect::new(pos.x as f32, pos.z as f32, 1., 1.),
+                        ggez::graphics::Color::BLUE,
+                    )?;
 
-    Ok(())
-}
+                    builder.line(
+                        &[
+                            [pos.x as f32, pos.z as f32 + 0.5],
+                            [pos.x as f32 + 1.0, pos.z as f32 + 0.5],
+                        ],
+                        0.3,
+                        graphics::Color::BLACK,
+                    )?;
 
-fn build_paths_mesh(
-    builder: &mut graphics::MeshBuilder,
-    paths: &[Vec<mint::Vector2<f32>>],
-) -> anyhow::Result<()> {
-    for path in paths {
-        if path.len() > 2 {
-            builder.polyline(
-                graphics::DrawMode::Stroke(graphics::StrokeOptions::default().with_line_width(0.2)),
-                &path,
-                graphics::Color::GREEN,
-            )?;
-        }
+                    builder.line(
+                        &[
+                            [pos.x as f32 + 0.5, pos.z as f32 + 0.5],
+                            [pos.x as f32 + 0.5, pos.z as f32 + 1.0],
+                        ],
+                        0.3,
+                        graphics::Color::BLACK,
+                    )?
+                }
+                2 => builder.rectangle(
+                    DrawMode::fill(),
+                    Rect::new(pos.x as f32, pos.z as f32, 1., 1.),
+                    ggez::graphics::Color::GREEN,
+                )?,
+                3 => {
+                    builder.rectangle(
+                        DrawMode::fill(),
+                        Rect::new(pos.x as f32, pos.z as f32, 1., 1.),
+                        ggez::graphics::Color::YELLOW,
+                    )?;
+
+                    builder.line(
+                        &[
+                            [pos.x as f32 + 0.5, pos.z as f32],
+                            [pos.x as f32 + 0.5, pos.z as f32 + 1.0],
+                        ],
+                        0.3,
+                        graphics::Color::BLACK,
+                    )?
+                }
+
+                _ => panic!(),
+            },
+            wfc::SpaceTile::NonCollapsed(h) => {
+                let mut color = ggez::graphics::Color::WHITE;
+                color.a = (h.len() as f32 / 3.0).min(1.0);
+                builder.rectangle(
+                    DrawMode::fill(),
+                    Rect::new(pos.x as f32, pos.z as f32, 1., 1.),
+                    color,
+                )?
+            }
+        };
     }
 
     Ok(())
@@ -184,7 +229,7 @@ impl event::EventHandler<anyhow::Error> for MainState {
                 .keyboard
                 .is_key_just_pressed(input::keyboard::KeyCode::R)
         {
-            self.mesh_producer = Some(spawn_mesh_builder(self.nodes.clone()))
+            self.mesh_producer = Some(spawn_mesh_builder(self.wfc.clone()))
         }
 
         Ok(())
