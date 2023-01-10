@@ -1,7 +1,7 @@
 //! The simplest possible example that does something.
 #![allow(clippy::unnecessary_wraps)]
 
-use std::{ops::ControlFlow, path::PathBuf, sync::mpsc, thread};
+use std::{collections::HashSet, path::PathBuf, sync::mpsc, thread};
 
 use ggez::{
     conf::{WindowMode, WindowSetup},
@@ -11,10 +11,7 @@ use ggez::{
     input, Context,
 };
 use rand::seq::IteratorRandom;
-use rex::{
-    wfc::{self, Tile},
-    Room,
-};
+use rex::wfc::{self, Tile, TileId};
 
 struct MainState {
     pos: Vec2,
@@ -26,37 +23,67 @@ struct MainState {
 
 impl MainState {
     fn new(path: &std::path::Path, ctx: &mut Context) -> anyhow::Result<MainState> {
+        fn any() -> HashSet<TileId, ahash::RandomState> {
+            [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11].into_iter().collect()
+        }
+        fn not(t: &HashSet<TileId, ahash::RandomState>) -> HashSet<TileId, ahash::RandomState> {
+            any().difference(t).copied().collect()
+        }
+        fn any_east_connectable() -> HashSet<TileId, ahash::RandomState> {
+            [0, 2, 4, 5, 7, 8, 11].into_iter().collect()
+        }
+        fn any_south_connectable() -> HashSet<TileId, ahash::RandomState> {
+            [1, 2, 3, 5, 8, 9, 11].into_iter().collect()
+        }
+        fn any_west_connectable() -> HashSet<TileId, ahash::RandomState> {
+            [0, 2, 3, 4, 6, 9, 11].into_iter().collect()
+        }
+        fn any_north_connectable() -> HashSet<TileId, ahash::RandomState> {
+            [1, 3, 4, 5, 6, 7, 11].into_iter().collect()
+        }
+        fn connect_thru(north: bool, east: bool, south: bool, west: bool) -> Tile {
+            let mut result = wfc::SpatialRuleMap::from_default(&any());
+            result = if north {
+                result.restricted(glam::IVec3::NEG_Z, any_south_connectable())
+            } else {
+                result.restricted(glam::IVec3::NEG_Z, not(&any_south_connectable()))
+            };
+            result = if east {
+                result.restricted(glam::IVec3::X, any_west_connectable())
+            } else {
+                result.restricted(glam::IVec3::X, not(&any_west_connectable()))
+            };
+            result = if south {
+                result.restricted(glam::IVec3::Z, any_north_connectable())
+            } else {
+                result.restricted(glam::IVec3::Z, not(&any_north_connectable()))
+            };
+            result = if west {
+                result.restricted(glam::IVec3::NEG_X, any_east_connectable())
+            } else {
+                result.restricted(glam::IVec3::NEG_X, not(&any_east_connectable()))
+            };
+
+            Tile::from_rules(result)
+        }
+        let horizontal = connect_thru(false, true, false, true);
+        let vertical = connect_thru(true, false, true, false);
+
+        let s_t = connect_thru(false, true, true, true);
+        let w_t = connect_thru(true, false, true, true);
+        let n_t = connect_thru(true, true, false, true);
+        let e_t = connect_thru(true, true, true, false);
+
+        let nw_t = connect_thru(true, false, false, true);
+        let ne_t = connect_thru(true, true, false, false);
+        let se_t = connect_thru(false, true, true, false);
+        let sw_t = connect_thru(false, false, true, true);
+
+        let empty = connect_thru(false, false, false, false);
+        let full = connect_thru(true, true, true, true);
+
         let wfc = wfc::Context::new(vec![
-            Tile::from_rules(wfc::SpatialRuleMap::from_fn(|pos| {
-                match (pos.x, pos.y, pos.z) {
-                    (1, 0, 0) => [0, 1].into_iter().collect(),
-                    (-1, 0, 0) => [0, 1].into_iter().collect(),
-                    (0, 0, _) => [0, 1, 2, 3].into_iter().collect(),
-                    (x, _, z) if x != 0 && z != 0 => [0, 1, 2, 3].into_iter().collect(),
-                    _ => Default::default(),
-                }
-            })),
-            Tile::from_rules(wfc::SpatialRuleMap::from_fn(|pos| {
-                match (pos.x, pos.y, pos.z) {
-                    (1, 0, 0) => [0, 1].into_iter().collect(),
-                    (-1, 0, 0) => [0, 1].into_iter().collect(),
-                    (0, 0, 1) => [3].into_iter().collect(),
-                    (x, _, z) if x != 0 && z != 0 => [0, 1, 2, 3].into_iter().collect(),
-                    _ => Default::default(),
-                }
-            })),
-            Tile::from_rules(wfc::SpatialRuleMap::from_fn(|_pos| {
-                [0, 1, 2, 3].into_iter().collect()
-            })),
-            Tile::from_rules(wfc::SpatialRuleMap::from_fn(|pos| {
-                match (pos.x, pos.y, pos.z) {
-                    (0, 0, 1) => [3].into_iter().collect(),
-                    (0, 0, -1) => [3, 1].into_iter().collect(),
-                    (_, 0, 0) => [0, 1, 2, 3].into_iter().collect(),
-                    (x, _, z) if x != 0 && z != 0 => [0, 1, 2, 3].into_iter().collect(),
-                    _ => Default::default(),
-                }
-            })),
+            horizontal, vertical, s_t, w_t, n_t, e_t, nw_t, ne_t, se_t, sw_t, empty, full,
         ]);
 
         let rx = spawn_mesh_builder(wfc.clone());
@@ -82,16 +109,9 @@ fn spawn_mesh_builder(ctx: wfc::Context) -> mpsc::Receiver<graphics::MeshBuilder
     thread::spawn(move || {
         let mut world = wfc::World::default();
         world.place(&ctx, 1, glam::IVec3::ZERO).unwrap();
-        world.place(&ctx, 1, glam::ivec3(2, 0, 3)).unwrap();
-        for x in -10..=10 {
-            world.place(&ctx, 2, glam::ivec3(x, 0, 10)).unwrap();
-            world.place(&ctx, 2, glam::ivec3(x, 0, -10)).unwrap();
-        }
-        for z in -9..=9 {
-            world.place(&ctx, 2, glam::ivec3(10, 0, z)).unwrap();
-            world.place(&ctx, 2, glam::ivec3(-10, 0, z)).unwrap();
-        }
-        dbg!(&world.space[&glam::ivec3(0, 0, 9)]);
+        world.place(&ctx, 2, glam::ivec3(2, 0, 3)).unwrap();
+        world.place(&ctx, 10, glam::ivec3(-2, 0, -3)).unwrap();
+        world.place(&ctx, 4, glam::ivec3(-3, 0, 5)).unwrap();
         let mut rng = rand::thread_rng();
 
         let mut builder = graphics::MeshBuilder::new();
@@ -100,7 +120,7 @@ fn spawn_mesh_builder(ctx: wfc::Context) -> mpsc::Receiver<graphics::MeshBuilder
         thread::sleep(std::time::Duration::from_millis(1000));
         let start = std::time::Instant::now();
 
-        for _ in 0..1000 {
+        for iter in 0..10000 {
             let random_min_entropy_pos = match world.least_entropy_positions_2d() {
                 Some(x) => x.choose(&mut rng).unwrap(),
                 None => glam::IVec3::ZERO,
@@ -108,9 +128,11 @@ fn spawn_mesh_builder(ctx: wfc::Context) -> mpsc::Receiver<graphics::MeshBuilder
             world
                 .collapse(&ctx, &mut rng, random_min_entropy_pos)
                 .unwrap();
-            let mut builder = graphics::MeshBuilder::new();
-            build_world_mesh(&mut builder, &world).unwrap();
-            tx.send(builder).unwrap();
+            if iter % 100 == 0 {
+                let mut builder = graphics::MeshBuilder::new();
+                build_world_mesh(&mut builder, &world).unwrap();
+                tx.send(builder).unwrap();
+            }
         }
 
         let end = std::time::Instant::now();
@@ -124,73 +146,61 @@ fn build_world_mesh(builder: &mut graphics::MeshBuilder, world: &wfc::World) -> 
         if pos.y != 0 {
             continue;
         }
-        log::info!("{}", pos);
         match tile {
-            &wfc::SpaceTile::Collapsed(index) => match index {
-                0 => {
-                    builder.rectangle(
-                        DrawMode::fill(),
-                        Rect::new(pos.x as f32, pos.z as f32, 1., 1.),
-                        ggez::graphics::Color::RED,
-                    )?;
-                    builder.line(
-                        &[
-                            [pos.x as f32, pos.z as f32 + 0.5],
-                            [pos.x as f32 + 1.0, pos.z as f32 + 0.5],
-                        ],
-                        0.3,
-                        graphics::Color::BLACK,
-                    )?
+            &wfc::SpaceTile::Collapsed(index) => {
+                match index {
+                    0 | 2 | 3 | 4 | 6 | 9 | 11 => {
+                        builder.line(
+                            &[
+                                [pos.x as f32, pos.z as f32 + 0.5],
+                                [pos.x as f32 + 0.5, pos.z as f32 + 0.5],
+                            ],
+                            0.3,
+                            graphics::Color::BLACK,
+                        )?;
+                    }
+                    _ => (),
                 }
-                1 => {
-                    builder.rectangle(
-                        DrawMode::fill(),
-                        Rect::new(pos.x as f32, pos.z as f32, 1., 1.),
-                        ggez::graphics::Color::BLUE,
-                    )?;
-
-                    builder.line(
-                        &[
-                            [pos.x as f32, pos.z as f32 + 0.5],
-                            [pos.x as f32 + 1.0, pos.z as f32 + 0.5],
-                        ],
-                        0.3,
-                        graphics::Color::BLACK,
-                    )?;
-
-                    builder.line(
-                        &[
-                            [pos.x as f32 + 0.5, pos.z as f32 + 0.5],
-                            [pos.x as f32 + 0.5, pos.z as f32 + 1.0],
-                        ],
-                        0.3,
-                        graphics::Color::BLACK,
-                    )?
+                match index {
+                    1 | 3 | 4 | 5 | 6 | 7 | 11 => {
+                        builder.line(
+                            &[
+                                [pos.x as f32 + 0.5, pos.z as f32],
+                                [pos.x as f32 + 0.5, pos.z as f32 + 0.5],
+                            ],
+                            0.3,
+                            graphics::Color::BLACK,
+                        )?;
+                    }
+                    _ => (),
                 }
-                2 => builder.rectangle(
-                    DrawMode::fill(),
-                    Rect::new(pos.x as f32, pos.z as f32, 1., 1.),
-                    ggez::graphics::Color::GREEN,
-                )?,
-                3 => {
-                    builder.rectangle(
-                        DrawMode::fill(),
-                        Rect::new(pos.x as f32, pos.z as f32, 1., 1.),
-                        ggez::graphics::Color::YELLOW,
-                    )?;
-
-                    builder.line(
-                        &[
-                            [pos.x as f32 + 0.5, pos.z as f32],
-                            [pos.x as f32 + 0.5, pos.z as f32 + 1.0],
-                        ],
-                        0.3,
-                        graphics::Color::BLACK,
-                    )?
+                match index {
+                    0 | 2 | 4 | 5 | 7 | 8 | 11 => {
+                        builder.line(
+                            &[
+                                [pos.x as f32 + 0.5, pos.z as f32 + 0.5],
+                                [pos.x as f32 + 1.0, pos.z as f32 + 0.5],
+                            ],
+                            0.3,
+                            graphics::Color::BLACK,
+                        )?;
+                    }
+                    _ => (),
                 }
-
-                _ => panic!(),
-            },
+                match index {
+                    1 | 2 | 3 | 5 | 8 | 9 | 11 => {
+                        builder.line(
+                            &[
+                                [pos.x as f32 + 0.5, pos.z as f32 + 0.5],
+                                [pos.x as f32 + 0.5, pos.z as f32 + 1.0],
+                            ],
+                            0.3,
+                            graphics::Color::BLACK,
+                        )?;
+                    }
+                    _ => (),
+                }
+            }
             wfc::SpaceTile::NonCollapsed(h) => {
                 let mut color = ggez::graphics::Color::WHITE;
                 color.a = (h.len() as f32 / 3.0).min(1.0);
@@ -198,7 +208,7 @@ fn build_world_mesh(builder: &mut graphics::MeshBuilder, world: &wfc::World) -> 
                     DrawMode::fill(),
                     Rect::new(pos.x as f32, pos.z as f32, 1., 1.),
                     color,
-                )?
+                )?;
             }
         };
     }
@@ -237,7 +247,7 @@ impl event::EventHandler<anyhow::Error> for MainState {
 
     fn draw(&mut self, ctx: &mut Context) -> anyhow::Result<()> {
         let mut canvas =
-            graphics::Canvas::from_frame(ctx, graphics::Color::from([0.12, 0.0, 0.21, 1.0]));
+            graphics::Canvas::from_frame(ctx, graphics::Color::from([0.92, 0.9, 0.91, 1.0]));
 
         canvas.draw(
             &self.mesh,

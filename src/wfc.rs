@@ -15,6 +15,10 @@ pub struct SpatialRuleMap {
 }
 
 impl SpatialRuleMap {
+    pub fn from_default(default_rule: &HashSet<TileId>) -> Self {
+        Self::from_fn(|_| default_rule.clone())
+    }
+
     pub fn from_fn(mut f: impl FnMut(IVec3) -> HashSet<TileId>) -> Self {
         let mut result =
             HashMap::with_capacity_and_hasher(3 * 3 * 3 - 1, ahash::RandomState::new());
@@ -32,6 +36,21 @@ impl SpatialRuleMap {
         }
 
         Self { rules: result }
+    }
+
+    pub fn restricted(mut self, offset: IVec3, rule: HashSet<TileId>) -> Self {
+        self.rules.insert(offset, rule);
+        self
+    }
+
+    /// Rotates clockwise around the Y axis.
+    pub fn rotated_clockwise(&self) -> Self {
+        SpatialRuleMap::from_fn(|pos| {
+            // New +X is old -Z
+            // New +Z is old +X
+            let rotated = glam::ivec3(-pos.z, pos.y, pos.x);
+            self.rules[&rotated].clone()
+        })
     }
 }
 
@@ -204,9 +223,11 @@ impl World {
                         .intersection(allowed)
                         .copied()
                         // Neighbour tiles also have their own rules
+                        // We assume those are respected by the rules of this tile
+                        /*
                         .filter(|&tile| {
                             ctx.tiles[tile].adjacency_rules.rules[&-offset].contains(&tile_id)
-                        })
+                        })*/
                         .collect();
                 }
             }
