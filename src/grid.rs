@@ -4,7 +4,7 @@ use glam::{ivec2, uvec2, vec2, IVec2, UVec2, Vec2};
 
 pub type RoomId = usize;
 
-struct GridChunk<Cell> {
+pub struct GridChunk<Cell> {
     cells: [Cell; 256], // TODO: Use Self::CELL_COUNT when Rust stabilizes using generic Self types in anonymous constants
 }
 
@@ -42,11 +42,23 @@ impl<Cell> GridChunk<Cell> {
         let mint::Vector2 { x, y } = pos.into();
         x < Self::CELLS_PER_AXIS && y < Self::CELLS_PER_AXIS
     }
+
+    pub fn cells(&self) -> impl Iterator<Item = (UVec2, &Cell)> {
+        self.cells.iter().enumerate().map(|(i, cell)| {
+            (
+                uvec2(
+                    i as u32 % Self::CELLS_PER_AXIS,
+                    i as u32 / Self::CELLS_PER_AXIS,
+                ),
+                cell,
+            )
+        })
+    }
 }
 
 #[derive(Default)]
 pub struct CartesianGrid<Cell: Default + Copy> {
-    chunks: HashMap<IVec2, GridChunk<Cell>>,
+    pub chunks: HashMap<IVec2, GridChunk<Cell>>,
 }
 
 impl<Cell: Default + Copy> CartesianGrid<Cell> {
@@ -107,6 +119,17 @@ impl<Cell: Default + Copy> CartesianGrid<Cell> {
             * GridChunk::<Cell>::CELLS_PER_AXIS as i32
             + <mint::Vector2<u32> as Into<UVec2>>::into(local_pos.into()).as_ivec2())
         .into()
+    }
+
+    pub fn cells(&self) -> impl Iterator<Item = (IVec2, &Cell)> {
+        self.chunks.iter().flat_map(|(&chunk_pos, chunk)| {
+            chunk.cells().map(move |(local_pos, cell)| {
+                (
+                    Self::chunk_and_local_coords_to_global_coords(chunk_pos, local_pos).into(),
+                    cell,
+                )
+            })
+        })
     }
 }
 
