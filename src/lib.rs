@@ -90,78 +90,76 @@ impl RoomTemplateDb {
     }
 }
 
-/// To-be-named algorithm using an infinite cell grid, trying to place rooms as close as possible but allowing placing corridors as connections
-/// that intersect each other.
 pub struct V3 {
     nodes: Vec<Node>,
-    room_positions: Vec<Option<IVec2>>,
-    /// Indicates the node branch the algorithm has gone through.
-    /// It will unwind when there are no more children to process in a given node,
-    /// and increase its size when a node has children to process.
-    queue: VecDeque<usize>,
-    allocator: SpaceAllocator,
-    patio_probability: f32,
-    patio_radius_range: Range<f32>,
+    room_positions: Vec<Vec2>,
 }
 
 impl V3 {
-    pub fn new(nodes: Vec<Node>, patio_probability: f32, patio_radius_range: Range<f32>) -> Self {
-        let mut queue = VecDeque::new();
-        queue.push_back(0);
+    pub fn new(nodes: Vec<Node>) -> Self {
+        let leaf_count = nodes.iter().filter(|node| node.children.len() == 0).count();
+
+        let mut leaf_idx = 0;
+        let node_positions = nodes.iter().map(|node| {
+            if node.children.len() == 0 {
+                let rotation = (leaf_idx as f32 / leaf_count as f32) * std::f32::consts::TAU;
+                leaf_idx += 1;
+                vec2(rotation.cos(), rotation.sin()) * 250.
+            } else {
+                Vec2::ZERO
+            }
+        });
         Self {
-            room_positions: vec![None; nodes.len()],
+            room_positions: node_positions.collect(),
             nodes,
-            // We start on the root node
-            queue,
-            allocator: SpaceAllocator::default(),
-            patio_probability,
-            patio_radius_range,
         }
     }
 
-    pub fn iterate(&mut self, rng: &mut impl Rng) -> ControlFlow<(), ()> {
-        let Some(node_idx) = self.queue.pop_front() else { return ControlFlow::Break(()) };
-        let node = &self.nodes[node_idx];
+    pub fn iterate(&mut self) -> ControlFlow<(), ()> {
+        let mut new_positions = self.room_positions.clone();
 
-        fn node_radius(node: &Node) -> f32 {
-            (node.children.len() as f32 + 2.).min(4.)
+        fn iter(
+            nodes: &[Node],
+            old_positions: &Vec<Vec2>,
+            new_positions: &mut Vec<Vec2>,
+            id: usize,
+        ) {
+            let node = &nodes[id];
+            if !node.children.is_empty() {
+                fn iter_sum_children(
+                    nodes: &[Node],
+                    positions: &Vec<Vec2>,
+                    id: usize,
+                ) -> (Vec2, usize) {
+                    let node = &nodes[id];
+                    if node.children.len() == 0 {
+                        (positions[id], 1)
+                    } else {
+                        node.children
+                            .iter()
+                            .copied()
+                            .map(|id| iter_sum_children(nodes, positions, id))
+                            .fold((positions[id], 1), |(pos, count), (p, c)| {
+                                (pos + p, count + c)
+                            })
+                    }
+                }
+                let (mut pos_sum, mut count) = iter_sum_children(nodes, old_positions, id);
+                pos_sum -= old_positions[id];
+                count -= 1;
+                if let Some(parent) = node.parent {
+                    pos_sum += old_positions[parent] * count as f32;
+                    count *= 2;
+                }
+                new_positions[id] = pos_sum / count as f32;
+                for &child in node.children.iter() {
+                    iter(nodes, old_positions, new_positions, child);
+                }
+            }
         }
 
-        let final_pos = self.allocator.allocate_near(
-            node_idx,
-            node.parent
-                .map(|parent| self.room_positions[parent].unwrap())
-                .unwrap_or(IVec2::ZERO)
-                .as_vec2(),
-            0., /*node.parent
-                .map(|parent| node_radius(&self.nodes[parent]))
-                .unwrap_or(0.)*/
-            node_radius(node),
-            rng,
-        );
-
-        self.room_positions[node_idx] = Some(final_pos.as_ivec2());
-
-        if rng.gen::<f32>() < self.patio_probability {
-            let radius = rng.gen_range(self.patio_radius_range.clone());
-            self.allocator.allocate_near(
-                usize::MAX,
-                node.parent
-                    .map(|parent| self.room_positions[parent].unwrap())
-                    .unwrap_or(IVec2::ZERO)
-                    .as_vec2(),
-                node.parent
-                    .map(|parent| node_radius(&self.nodes[parent]))
-                    .unwrap_or(0.),
-                radius,
-                rng,
-            );
-        }
-
-        for &child in &node.children {
-            self.queue.push_back(child);
-        }
-
+        iter(&self.nodes, &self.room_positions, &mut new_positions, 0);
+        self.room_positions = new_positions;
         ControlFlow::Continue(())
     }
 
@@ -169,12 +167,8 @@ impl V3 {
         self.nodes.as_ref()
     }
 
-    pub fn room_positions(&self) -> &[Option<IVec2>] {
+    pub fn room_positions(&self) -> &[Vec2] {
         self.room_positions.as_ref()
-    }
-
-    pub fn allocator(&self) -> &SpaceAllocator {
-        &self.allocator
     }
 }
 
@@ -202,9 +196,9 @@ impl V3Expand {
             expansion: v3
                 .room_positions
                 .into_iter()
-                .map(Option::unwrap)
                 .enumerate()
                 .map(|(id, pos)| {
+                    let pos = pos.as_ivec2();
                     grid.set_cell(pos, Some(id));
                     RoomExpansionPositions {
                         nw_corner: pos,

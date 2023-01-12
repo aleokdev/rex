@@ -43,33 +43,25 @@ fn spawn_mesh_builder(nodes: Vec<rex::Node>, radius: f32) -> mpsc::Receiver<grap
     thread::spawn(move || {
         let start = std::time::Instant::now();
 
-        let mut v3 = rex::V3::new(nodes.clone(), 0.1, 5.0..6.0);
+        let mut v3 = rex::V3::new(nodes.clone());
         let mut rng = rand::thread_rng();
         let mut iterations = 0;
 
         loop {
-            match v3.iterate(&mut rng) {
+            match v3.iterate() {
                 ControlFlow::Break(_) => break,
                 ControlFlow::Continue(_) => {}
             }
 
             if iterations % 100 == 0 {
                 let mut builder = graphics::MeshBuilder::new();
-                build_room_mesh(
-                    &mut builder,
-                    v3.room_positions()
-                        .iter()
-                        .enumerate()
-                        .filter_map(|(id, pos)| pos.map(|pos| (id, pos)))
-                        .map(|(id, pos)| (ggez::glam::ivec2(pos.x, pos.y), id)),
-                )
-                .unwrap();
+                build_network_mesh(&mut builder, v3.nodes(), v3.room_positions()).unwrap();
                 tx.send(builder).unwrap();
             }
 
             iterations += 1;
         }
-        let allocator = v3.allocator().clone();
+        /*let allocator = v3.allocator().clone();
         log::info!(
             "Selecting starting positions took {}s in total",
             (std::time::Instant::now() - start).as_secs_f32()
@@ -155,7 +147,7 @@ fn spawn_mesh_builder(nodes: Vec<rex::Node>, radius: f32) -> mpsc::Receiver<grap
         build_room_mesh_doors(&mut builder, doors.iter()).unwrap();
         build_allocator_mesh(&mut builder, allocator.allocations());
         build_network_mesh(&mut builder, &nodes, &room_positions);
-        tx.send(builder).unwrap();
+        tx.send(builder).unwrap();*/
     });
     rx
 }
@@ -179,7 +171,7 @@ fn build_allocator_mesh<'s>(
 fn build_network_mesh<'s>(
     builder: &mut graphics::MeshBuilder,
     nodes: &[Node],
-    node_positions: &[rex::glam::IVec2],
+    node_positions: &[rex::glam::Vec2],
 ) -> anyhow::Result<()> {
     for (id, node) in nodes.iter().enumerate() {
         let start = node_positions[id];
