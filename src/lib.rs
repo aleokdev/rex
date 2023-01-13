@@ -99,68 +99,88 @@ pub struct V3 {
     /// It will unwind when there are no more children to process in a given node,
     /// and increase its size when a node has children to process.
     queue: VecDeque<usize>,
+    map: CartesianRoomGrid,
     allocator: SpaceAllocator,
-    patio_probability: f32,
-    patio_radius_range: Range<f32>,
 }
 
 impl V3 {
-    pub fn new(nodes: Vec<Node>, patio_probability: f32, patio_radius_range: Range<f32>) -> Self {
+    pub fn new(nodes: Vec<Node>) -> Self {
         let mut queue = VecDeque::new();
         queue.push_back(0);
+        let mut map = CartesianRoomGrid::default();
+        map.set_cell(IVec2::ZERO, Some(0));
+        expand_room(&mut map, [(0, IVec2::ZERO)].into_iter());
+        let mut room_positions = vec![None; nodes.len()];
+        room_positions[0] = Some(IVec2::ZERO);
         Self {
-            room_positions: vec![None; nodes.len()],
+            room_positions,
             nodes,
             // We start on the root node
             queue,
             allocator: SpaceAllocator::default(),
-            patio_probability,
-            patio_radius_range,
+            map,
         }
     }
 
     pub fn iterate(&mut self, rng: &mut impl Rng) -> ControlFlow<(), ()> {
         let Some(node_idx) = self.queue.pop_front() else { return ControlFlow::Break(()) };
         let node = &self.nodes[node_idx];
+        let room_pos = self.room_positions[node_idx].unwrap();
 
-        fn node_radius(node: &Node) -> f32 {
-            (node.children.len() as f32 + 2.).min(4.)
+        let mut edge_positions: Vec<IVec2> = AdjacentCellsIter::new(&self.map, node_idx, room_pos)
+            .filter(|&pos| self.map.cell(pos).copied().flatten().is_none())
+            .collect();
+        let mut positions_to_expand_to = Vec::new();
+        let mut child_idx = 0;
+        let mut to_expand = Vec::new();
+        while edge_positions.len() > 0 && child_idx < node.children.len() {
+            self.room_positions[node.children[child_idx]] = Some(edge_positions.pop().unwrap());
+            to_expand.push(child_idx);
+            child_idx += 1;
+            if let Some(x) = edge_positions.pop() {
+                positions_to_expand_to.push(x);
+            }
+            if let Some(x) = edge_positions.pop() {
+                positions_to_expand_to.push(x);
+            }
+            if edge_positions.len() == 0 {
+                let Some(position_to_expand_to) = positions_to_expand_to.choose(rng).copied() else { break; };
+                expand_room(
+                    &mut self.map,
+                    to_expand
+                        .drain(..)
+                        .map(|child_idx| node.children[child_idx])
+                        .map(|child| {
+                            self.queue.push_back(child);
+                            (child, self.room_positions[child].unwrap())
+                        })
+                        .chain(std::iter::once((node_idx, position_to_expand_to))),
+                );
+
+                positions_to_expand_to.clear();
+                edge_positions = AdjacentCellsIter::new(&self.map, node_idx, room_pos)
+                    .filter(|&pos| self.map.cell(pos).copied().flatten().is_none())
+                    .collect();
+            }
         }
 
-        let final_pos = self.allocator.allocate_near(
-            node_idx,
-            node.parent
-                .map(|parent| self.room_positions[parent].unwrap())
-                .unwrap_or(IVec2::ZERO)
-                .as_vec2(),
-            0., /*node.parent
-                .map(|parent| node_radius(&self.nodes[parent]))
-                .unwrap_or(0.)*/
-            node_radius(node),
-            rng,
+        expand_room(
+            &mut self.map,
+            to_expand
+                .iter()
+                .map(|&child_idx| node.children[child_idx])
+                .map(|child| {
+                    self.queue.push_back(child);
+                    (child, self.room_positions[child].unwrap())
+                }),
         );
 
-        self.room_positions[node_idx] = Some(final_pos.as_ivec2());
-
-        if rng.gen::<f32>() < self.patio_probability {
-            let radius = rng.gen_range(self.patio_radius_range.clone());
-            self.allocator.allocate_near(
-                usize::MAX,
-                node.parent
-                    .map(|parent| self.room_positions[parent].unwrap())
-                    .unwrap_or(IVec2::ZERO)
-                    .as_vec2(),
-                node.parent
-                    .map(|parent| node_radius(&self.nodes[parent]))
-                    .unwrap_or(0.),
-                radius,
-                rng,
-            );
-        }
-
-        for &child in &node.children {
-            self.queue.push_back(child);
-        }
+        log::info!(
+            "Placed {}/{} children. Queue length: {}",
+            child_idx,
+            node.children.len(),
+            self.queue.len()
+        );
 
         ControlFlow::Continue(())
     }
@@ -176,6 +196,88 @@ impl V3 {
     pub fn allocator(&self) -> &SpaceAllocator {
         &self.allocator
     }
+
+    pub fn map(&self) -> &CartesianRoomGrid {
+        &self.map
+    }
+}
+
+struct AdjacentCellsIter<'s> {
+    map: &'s CartesianRoomGrid,
+    id: usize,
+    starting_pos: IVec2,
+    edge_pos: IVec2,
+    direction: IVec2,
+    done: bool,
+}
+
+impl<'s> AdjacentCellsIter<'s> {
+    fn new(map: &'s CartesianRoomGrid, id: usize, room_pos: IVec2) -> Self {
+        // Find the room edge by moving towards +X until we aren't in the room any more
+        let mut room_edge = room_pos;
+        while map.cell(room_edge) == Some(&Some(id)) {
+            room_edge.x += 1;
+        }
+
+        Self {
+            map,
+            id,
+            starting_pos: room_edge,
+            edge_pos: room_edge,
+            direction: IVec2::Y,
+            done: false,
+        }
+    }
+}
+
+impl Iterator for AdjacentCellsIter<'_> {
+    type Item = IVec2;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.done {
+            return None;
+        }
+        assert!(self.map.cell(self.edge_pos) != Some(&Some(self.id)));
+
+        fn rotate_cw(v: IVec2) -> IVec2 {
+            ivec2(-v.y, v.x)
+        }
+        fn rotate_ccw(v: IVec2) -> IVec2 {
+            ivec2(v.y, -v.x)
+        }
+        // If about to hit the room, rotate counterclockwise
+        if self.map.cell(self.edge_pos + self.direction) == Some(&Some(self.id)) {
+            if self.map.cell(self.edge_pos + rotate_ccw(self.direction)) == Some(&Some(self.id)) {
+                // #|-
+                // #^#
+                // ###
+                self.edge_pos -= self.direction;
+            }
+            // else
+            // #|
+            // #L_
+            // ###
+            self.direction = rotate_ccw(self.direction);
+        }
+
+        let result = self.edge_pos;
+        self.edge_pos += self.direction;
+
+        // Skip outer corners
+        if self.map.cell(self.edge_pos + rotate_cw(self.direction)) != Some(&Some(self.id)) {
+            // #|
+            // #|
+            // -+
+            self.direction = rotate_cw(self.direction);
+            self.edge_pos += self.direction;
+        }
+
+        if self.edge_pos == self.starting_pos {
+            self.done = true;
+        };
+
+        Some(result)
+    }
 }
 
 struct RoomExpansionPositions {
@@ -188,55 +290,40 @@ struct RoomExpansionPositions {
     longest_side_edge: usize,
 }
 
-pub struct V3Expand {
-    grid: CartesianRoomGrid,
-    expansion: Vec<RoomExpansionPositions>,
-    expandable: Vec<usize>,
-}
-const MAX_LONGEST_SIDE_EDGE: usize = 7;
+fn expand_room(map: &mut CartesianRoomGrid, rooms: impl Iterator<Item = (usize, IVec2)>) {
+    const MAX_LONGEST_SIDE_EDGE: usize = 7;
 
-impl V3Expand {
-    pub fn from_v3(v3: V3) -> V3Expand {
-        let mut grid = CartesianRoomGrid::default();
-        Self {
-            expansion: v3
-                .room_positions
-                .into_iter()
-                .map(Option::unwrap)
-                .enumerate()
-                .map(|(id, pos)| {
-                    grid.set_cell(pos, Some(id));
-                    RoomExpansionPositions {
-                        nw_corner: pos,
-                        se_corner: pos,
-                        expand_down: true,
-                        expand_left: true,
-                        expand_right: true,
-                        expand_up: true,
-                        longest_side_edge: 1,
-                    }
-                })
-                .collect(),
-            grid,
-            expandable: (0..v3.nodes.len()).collect(),
-        }
-    }
+    let mut expandable: Vec<(usize, RoomExpansionPositions)> = rooms
+        .map(|(id, pos)| {
+            map.set_cell(pos, Some(id));
+            (
+                id,
+                RoomExpansionPositions {
+                    nw_corner: pos,
+                    se_corner: pos,
+                    expand_down: true,
+                    expand_left: true,
+                    expand_right: true,
+                    expand_up: true,
+                    longest_side_edge: 1,
+                },
+            )
+        })
+        .collect();
 
-    pub fn iterate(&mut self) -> ControlFlow<(), ()> {
-        self.expandable.retain(|&id| {
-            let positions = &mut self.expansion[id];
+    while !expandable.is_empty() {
+        expandable.retain_mut(|&mut (id, ref mut positions)| {
             if positions.expand_left {
                 let positions_to_expand_to = (positions.nw_corner.y..=positions.se_corner.y)
                     .map(|y| ivec2(positions.nw_corner.x - 1, y));
                 if positions_to_expand_to.clone().all(|pos| {
-                    self.grid
-                        .cell(pos)
+                    map.cell(pos)
                         .copied()
                         .flatten()
                         .map(|cell| cell == id)
                         .unwrap_or(true)
                 }) {
-                    positions_to_expand_to.for_each(|pos| self.grid.set_cell(pos, Some(id)));
+                    positions_to_expand_to.for_each(|pos| map.set_cell(pos, Some(id)));
                     positions.nw_corner.x -= 1;
                 } else {
                     positions.expand_left = false;
@@ -246,14 +333,13 @@ impl V3Expand {
                 let positions_to_expand_to = (positions.nw_corner.y..=positions.se_corner.y)
                     .map(|y| ivec2(positions.se_corner.x + 1, y));
                 if positions_to_expand_to.clone().all(|pos| {
-                    self.grid
-                        .cell(pos)
+                    map.cell(pos)
                         .copied()
                         .flatten()
                         .map(|cell| cell == id)
                         .unwrap_or(true)
                 }) {
-                    positions_to_expand_to.for_each(|pos| self.grid.set_cell(pos, Some(id)));
+                    positions_to_expand_to.for_each(|pos| map.set_cell(pos, Some(id)));
                     positions.se_corner.x += 1;
                 } else {
                     positions.expand_right = false;
@@ -263,14 +349,13 @@ impl V3Expand {
                 let positions_to_expand_to = (positions.nw_corner.x..=positions.se_corner.x)
                     .map(|x| ivec2(x, positions.nw_corner.y - 1));
                 if positions_to_expand_to.clone().all(|pos| {
-                    self.grid
-                        .cell(pos)
+                    map.cell(pos)
                         .copied()
                         .flatten()
                         .map(|cell| cell == id)
                         .unwrap_or(true)
                 }) {
-                    positions_to_expand_to.for_each(|pos| self.grid.set_cell(pos, Some(id)));
+                    positions_to_expand_to.for_each(|pos| map.set_cell(pos, Some(id)));
                     positions.nw_corner.y -= 1;
                 } else {
                     positions.expand_up = false;
@@ -280,14 +365,13 @@ impl V3Expand {
                 let positions_to_expand_to = (positions.nw_corner.x..=positions.se_corner.x)
                     .map(|x| ivec2(x, positions.se_corner.y + 1));
                 if positions_to_expand_to.clone().all(|pos| {
-                    self.grid
-                        .cell(pos)
+                    map.cell(pos)
                         .copied()
                         .flatten()
                         .map(|cell| cell == id)
                         .unwrap_or(true)
                 }) {
-                    positions_to_expand_to.for_each(|pos| self.grid.set_cell(pos, Some(id)));
+                    positions_to_expand_to.for_each(|pos| map.set_cell(pos, Some(id)));
                     positions.se_corner.y += 1;
                 } else {
                     positions.expand_down = false;
@@ -303,121 +387,6 @@ impl V3Expand {
                     || positions.expand_right
                     || positions.expand_up)
         });
-
-        if self.expandable.is_empty() {
-            ControlFlow::Break(())
-        } else {
-            ControlFlow::Continue(())
-        }
-    }
-
-    pub fn grid(&self) -> &CartesianRoomGrid {
-        &self.grid
-    }
-}
-
-pub struct V3FillGaps {
-    grid: CartesianRoomGrid,
-    expansion: Vec<RoomExpansionPositions>,
-    index: usize,
-}
-
-impl V3FillGaps {
-    pub fn from_v3_expand(mut v3: V3Expand) -> V3FillGaps {
-        for exp in v3.expansion.iter_mut() {
-            exp.expand_down = true;
-            exp.expand_left = true;
-            exp.expand_right = true;
-            exp.expand_up = true;
-        }
-        Self {
-            grid: v3.grid,
-            expansion: v3.expansion,
-            index: 0,
-        }
-    }
-    pub fn iterate(&mut self) -> ControlFlow<(), ()> {
-        if let Some(positions) = self.expansion.get_mut(self.index) {
-            // Keep going while we can expand
-            while positions.longest_side_edge < MAX_LONGEST_SIDE_EDGE
-                && (positions.expand_down
-                    || positions.expand_left
-                    || positions.expand_right
-                    || positions.expand_up)
-            {
-                // Keep expanding while there are empty cells to expand to
-                if positions.expand_left {
-                    let positions_to_expand_to = (positions.nw_corner.y..=positions.se_corner.y)
-                        .map(|y| ivec2(positions.nw_corner.x - 1, y))
-                        .filter(|&pos| self.grid.cell(pos).copied().flatten().is_none())
-                        .collect::<Vec<_>>();
-                    if positions_to_expand_to.len() != 0 {
-                        positions_to_expand_to
-                            .into_iter()
-                            .for_each(|pos| self.grid.set_cell(pos, Some(self.index)));
-                        positions.nw_corner.x -= 1;
-                    } else {
-                        positions.expand_left = false;
-                    }
-                }
-                if positions.expand_right {
-                    let positions_to_expand_to = (positions.nw_corner.y..=positions.se_corner.y)
-                        .map(|y| ivec2(positions.se_corner.x + 1, y))
-                        .filter(|&pos| self.grid.cell(pos).copied().flatten().is_none())
-                        .collect::<Vec<_>>();
-                    if positions_to_expand_to.len() != 0 {
-                        positions_to_expand_to
-                            .into_iter()
-                            .for_each(|pos| self.grid.set_cell(pos, Some(self.index)));
-                        positions.se_corner.x += 1;
-                    } else {
-                        positions.expand_right = false;
-                    }
-                }
-
-                if positions.expand_up {
-                    let positions_to_expand_to = (positions.nw_corner.x..=positions.se_corner.x)
-                        .map(|x| ivec2(x, positions.nw_corner.y - 1))
-                        .filter(|&pos| self.grid.cell(pos).copied().flatten().is_none())
-                        .collect::<Vec<_>>();
-                    if positions_to_expand_to.len() != 0 {
-                        positions_to_expand_to
-                            .into_iter()
-                            .for_each(|pos| self.grid.set_cell(pos, Some(self.index)));
-                        positions.nw_corner.y -= 1;
-                    } else {
-                        positions.expand_up = false;
-                    }
-                }
-
-                if positions.expand_down {
-                    let positions_to_expand_to = (positions.nw_corner.x..=positions.se_corner.x)
-                        .map(|x| ivec2(x, positions.se_corner.y + 1))
-                        .filter(|&pos| self.grid.cell(pos).copied().flatten().is_none())
-                        .collect::<Vec<_>>();
-                    if positions_to_expand_to.len() != 0 {
-                        positions_to_expand_to
-                            .into_iter()
-                            .for_each(|pos| self.grid.set_cell(pos, Some(self.index)));
-                        positions.se_corner.y += 1;
-                    } else {
-                        positions.expand_down = false;
-                    }
-                }
-
-                positions.longest_side_edge += 1;
-            }
-
-            self.index += 1;
-
-            ControlFlow::Continue(())
-        } else {
-            ControlFlow::Break(())
-        }
-    }
-
-    pub fn grid(&self) -> &CartesianRoomGrid {
-        &self.grid
     }
 }
 
@@ -539,7 +508,7 @@ pub fn generate_doors(
             }
             room_edge += direction;
 
-            if room_edge != starting_pos {
+            if room_edge == starting_pos {
                 break;
             }
         }

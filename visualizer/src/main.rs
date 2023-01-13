@@ -1,10 +1,10 @@
 //! The simplest possible example that does something.
 #![allow(clippy::unnecessary_wraps)]
 
-use std::{ops::ControlFlow, path::PathBuf, sync::mpsc, thread};
+use std::{ops::ControlFlow, path::PathBuf, sync::mpsc, thread, time::Duration};
 
 use ggez::{conf::WindowMode, event, glam::*, graphics, input, Context};
-use rex::{grid::RoomId, space::SpaceAllocation, Door, Node, Room, V3Expand, V3FillGaps, Wall};
+use rex::{grid::RoomId, space::SpaceAllocation, Door, Node, Room, Wall};
 
 struct MainState {
     pos: Vec2,
@@ -43,7 +43,7 @@ fn spawn_mesh_builder(nodes: Vec<rex::Node>, radius: f32) -> mpsc::Receiver<grap
     thread::spawn(move || {
         let start = std::time::Instant::now();
 
-        let mut v3 = rex::V3::new(nodes.clone(), 0.1, 5.0..6.0);
+        let mut v3 = rex::V3::new(nodes.clone());
         let mut rng = rand::thread_rng();
         let mut iterations = 0;
 
@@ -53,15 +53,13 @@ fn spawn_mesh_builder(nodes: Vec<rex::Node>, radius: f32) -> mpsc::Receiver<grap
                 ControlFlow::Continue(_) => {}
             }
 
-            if iterations % 100 == 0 {
+            if iterations % 5 == 0 {
                 let mut builder = graphics::MeshBuilder::new();
                 build_room_mesh(
                     &mut builder,
-                    v3.room_positions()
-                        .iter()
-                        .enumerate()
-                        .filter_map(|(id, pos)| pos.map(|pos| (id, pos)))
-                        .map(|(id, pos)| (ggez::glam::ivec2(pos.x, pos.y), id)),
+                    v3.map().cells().filter_map(|(pos, &cell)| {
+                        cell.map(|id| (ggez::glam::IVec2::new(pos.x, pos.y), id))
+                    }),
                 )
                 .unwrap();
                 tx.send(builder).unwrap();
@@ -69,6 +67,31 @@ fn spawn_mesh_builder(nodes: Vec<rex::Node>, radius: f32) -> mpsc::Receiver<grap
 
             iterations += 1;
         }
+        let total_placed = v3.room_positions().iter().filter(|&x| x.is_some()).count();
+        log::info!(
+            "Total stats: Placed {}/{} nodes ({:.2}%)",
+            total_placed,
+            nodes.len(),
+            (total_placed as f32 / nodes.len() as f32) * 100.
+        );
+        let walls = rex::generate_wall_map(v3.map());
+        let mut builder = graphics::MeshBuilder::new();
+        build_room_mesh(
+            &mut builder,
+            v3.map().cells().filter_map(|(pos, &cell)| {
+                cell.map(|id| (ggez::glam::IVec2::new(pos.x, pos.y), id))
+            }),
+        )
+        .unwrap();
+        build_room_mesh_walls(
+            &mut builder,
+            walls
+                .cells()
+                .map(|(pos, &cell)| (ggez::glam::IVec2::new(pos.x, pos.y), cell)),
+        )
+        .unwrap();
+        tx.send(builder).unwrap();
+        /*
         let allocator = v3.allocator().clone();
         log::info!(
             "Selecting starting positions took {}s in total",
@@ -155,7 +178,7 @@ fn spawn_mesh_builder(nodes: Vec<rex::Node>, radius: f32) -> mpsc::Receiver<grap
         build_room_mesh_doors(&mut builder, doors.iter()).unwrap();
         build_allocator_mesh(&mut builder, allocator.allocations());
         build_network_mesh(&mut builder, &nodes, &room_positions);
-        tx.send(builder).unwrap();
+        tx.send(builder).unwrap();*/
     });
     rx
 }
