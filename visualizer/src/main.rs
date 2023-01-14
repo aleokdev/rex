@@ -1,12 +1,10 @@
 //! The simplest possible example that does something.
 #![allow(clippy::unnecessary_wraps)]
 
-use std::{
-    collections::HashMap, ops::ControlFlow, path::PathBuf, sync::mpsc, thread, time::Duration,
-};
+use std::{collections::HashMap, ops::ControlFlow, path::PathBuf, sync::mpsc, thread};
 
 use ggez::{conf::WindowMode, event, glam::*, graphics, input, Context};
-use rex::{grid::RoomId, space::SpaceAllocation, Door, Node, Room, Wall};
+use rex::{grid::RoomId, space::SpaceAllocation, Door, Node, Wall};
 
 enum MeshProducerData {
     OnlyFloor0(graphics::MeshBuilder),
@@ -19,15 +17,13 @@ struct MainState {
     meshes: HashMap<i32, graphics::Mesh>,
     mesh_producer: Option<mpsc::Receiver<MeshProducerData>>,
     nodes: Vec<rex::Node>,
-    radius: f32,
     current_floor: i32,
 }
 
 impl MainState {
     fn new(path: &std::path::Path, ctx: &mut Context) -> anyhow::Result<MainState> {
         let nodes = rex::generate_nodes(path)?;
-        let radius = 5.;
-        let rx = spawn_mesh_builder(nodes.clone(), radius);
+        let rx = spawn_mesh_builder(nodes.clone());
 
         Ok(MainState {
             pos: vec2(-512., -512.),
@@ -35,13 +31,12 @@ impl MainState {
             meshes: HashMap::new(),
             mesh_producer: Some(rx),
             nodes,
-            radius,
             current_floor: 0,
         })
     }
 }
 
-fn spawn_mesh_builder(nodes: Vec<rex::Node>, radius: f32) -> mpsc::Receiver<MeshProducerData> {
+fn spawn_mesh_builder(nodes: Vec<rex::Node>) -> mpsc::Receiver<MeshProducerData> {
     let (tx, rx) = mpsc::channel();
     thread::spawn(move || {
         let start = std::time::Instant::now();
@@ -254,7 +249,7 @@ impl event::EventHandler<anyhow::Error> for MainState {
             .keyboard
             .is_key_just_pressed(input::keyboard::KeyCode::R)
         {
-            self.mesh_producer = Some(spawn_mesh_builder(self.nodes.clone(), self.radius))
+            self.mesh_producer = Some(spawn_mesh_builder(self.nodes.clone()))
         }
 
         if ctx
