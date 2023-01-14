@@ -10,9 +10,9 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use ahash::HashSet;
+use ahash::{AHashMap, HashSet};
 use bitflags::bitflags;
-use glam::{ivec2, vec2, IVec2, Vec2};
+use glam::{ivec2, vec2, IVec2, IVec3, Vec2};
 use grid::{CartesianGrid, CartesianRoomGrid, RoomTemplate};
 use rand::{seq::SliceRandom, Rng};
 use space::{SpaceAllocation, SpaceAllocator};
@@ -90,16 +90,14 @@ impl RoomTemplateDb {
     }
 }
 
-/// To-be-named algorithm using an infinite cell grid, trying to place rooms as close as possible but allowing placing corridors as connections
-/// that intersect each other.
 pub struct V3 {
     nodes: Vec<Node>,
-    room_positions: Vec<Option<IVec2>>,
+    room_positions: Vec<Option<IVec3>>,
     /// Indicates the node branch the algorithm has gone through.
     /// It will unwind when there are no more children to process in a given node,
     /// and increase its size when a node has children to process.
     queue: VecDeque<usize>,
-    map: CartesianRoomGrid,
+    floors: AHashMap<i32, CartesianRoomGrid>,
     allocator: SpaceAllocator,
 }
 
@@ -107,18 +105,18 @@ impl V3 {
     pub fn new(nodes: Vec<Node>) -> Self {
         let mut queue = VecDeque::new();
         queue.push_back(0);
-        let mut map = CartesianRoomGrid::default();
-        map.set_cell(IVec2::ZERO, Some(0));
-        expand_room(&mut map, [(0, IVec2::ZERO)].into_iter());
+        let mut floors = AHashMap::from_iter([(0, CartesianRoomGrid::default())]);
+        floors.entry(0).or_default().set_cell(IVec2::ZERO, Some(0));
+        expand_room(floors.get_mut(&0).unwrap(), [(0, IVec2::ZERO)].into_iter());
         let mut room_positions = vec![None; nodes.len()];
-        room_positions[0] = Some(IVec2::ZERO);
+        room_positions[0] = Some(IVec3::ZERO);
         Self {
             room_positions,
             nodes,
             // We start on the root node
             queue,
             allocator: SpaceAllocator::default(),
-            map,
+            floors,
         }
     }
 
@@ -126,15 +124,19 @@ impl V3 {
         let Some(node_idx) = self.queue.pop_front() else { return ControlFlow::Break(()) };
         let node = &self.nodes[node_idx];
         let room_pos = self.room_positions[node_idx].unwrap();
+        let mut current_floor = room_pos.z;
+        let room_pos = room_pos.truncate();
 
-        let mut edge_positions: Vec<IVec2> = AdjacentCellsIter::new(&self.map, node_idx, room_pos)
-            .filter(|&pos| self.map.cell(pos).copied().flatten().is_none())
+        let floor = self.floors.entry(current_floor).or_default();
+        let mut edge_positions: Vec<IVec2> = AdjacentCellsIter::new(floor, node_idx, room_pos)
+            .filter(|&pos| floor.cell(pos).copied().flatten().is_none())
             .collect();
         let mut positions_to_expand_to = Vec::new();
         let mut child_idx = 0;
         let mut to_expand = Vec::new();
         while edge_positions.len() > 0 && child_idx < node.children.len() {
-            self.room_positions[node.children[child_idx]] = Some(edge_positions.pop().unwrap());
+            self.room_positions[node.children[child_idx]] =
+                Some(edge_positions.pop().unwrap().extend(current_floor));
             to_expand.push(child_idx);
             child_idx += 1;
             if let Some(x) = edge_positions.pop() {
@@ -144,42 +146,64 @@ impl V3 {
                 positions_to_expand_to.push(x);
             }
             if edge_positions.len() == 0 {
-                let Some(position_to_expand_to) = positions_to_expand_to.choose(rng).copied() else { break; };
-                expand_room(
-                    &mut self.map,
-                    to_expand
-                        .drain(..)
-                        .map(|child_idx| node.children[child_idx])
-                        .map(|child| {
-                            self.queue.push_back(child);
-                            (child, self.room_positions[child].unwrap())
-                        })
-                        .chain(std::iter::once((node_idx, position_to_expand_to))),
-                );
+                if let Some(pos) = positions_to_expand_to.choose(rng).copied() {
+                    let position_to_expand_to = pos;
+                    expand_room(
+                        self.floors.entry(current_floor).or_default(),
+                        to_expand
+                            .drain(..)
+                            .map(|child_idx| node.children[child_idx])
+                            .map(|child| {
+                                self.queue.push_back(child);
+                                (child, self.room_positions[child].unwrap().truncate())
+                            })
+                            .chain(std::iter::once((node_idx, position_to_expand_to))),
+                    );
+                } else {
+                    expand_room(
+                        self.floors.entry(current_floor).or_default(),
+                        to_expand
+                            .drain(..)
+                            .map(|child_idx| node.children[child_idx])
+                            .map(|child| {
+                                self.queue.push_back(child);
+                                (child, self.room_positions[child].unwrap().truncate())
+                            }),
+                    );
+                    let upper_floor = self.floors.entry(current_floor + 1).or_default();
+                    if upper_floor.cell(room_pos).is_none() {
+                        current_floor += 1;
+                    } else {
+                        let lower_floor = self.floors.entry(current_floor - 1).or_default();
+                        if lower_floor.cell(room_pos).is_none() {
+                            current_floor -= 1;
+                        } else {
+                            break;
+                        }
+                    }
+                    expand_room(
+                        self.floors.entry(current_floor).or_default(),
+                        std::iter::once((node_idx, room_pos)),
+                    );
+                };
 
+                let floor = self.floors.entry(current_floor).or_default();
                 positions_to_expand_to.clear();
-                edge_positions = AdjacentCellsIter::new(&self.map, node_idx, room_pos)
-                    .filter(|&pos| self.map.cell(pos).copied().flatten().is_none())
+                edge_positions = AdjacentCellsIter::new(floor, node_idx, room_pos)
+                    .filter(|&pos| floor.cell(pos).copied().flatten().is_none())
                     .collect();
             }
         }
 
         expand_room(
-            &mut self.map,
+            self.floors.entry(current_floor).or_default(),
             to_expand
                 .iter()
                 .map(|&child_idx| node.children[child_idx])
                 .map(|child| {
                     self.queue.push_back(child);
-                    (child, self.room_positions[child].unwrap())
+                    (child, self.room_positions[child].unwrap().truncate())
                 }),
-        );
-
-        log::info!(
-            "Placed {}/{} children. Queue length: {}",
-            child_idx,
-            node.children.len(),
-            self.queue.len()
         );
 
         ControlFlow::Continue(())
@@ -189,7 +213,7 @@ impl V3 {
         self.nodes.as_ref()
     }
 
-    pub fn room_positions(&self) -> &[Option<IVec2>] {
+    pub fn room_positions(&self) -> &[Option<IVec3>] {
         self.room_positions.as_ref()
     }
 
@@ -197,8 +221,8 @@ impl V3 {
         &self.allocator
     }
 
-    pub fn map(&self) -> &CartesianRoomGrid {
-        &self.map
+    pub fn map(&self) -> &AHashMap<i32, CartesianRoomGrid> {
+        &self.floors
     }
 }
 

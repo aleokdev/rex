@@ -1,18 +1,26 @@
 //! The simplest possible example that does something.
 #![allow(clippy::unnecessary_wraps)]
 
-use std::{ops::ControlFlow, path::PathBuf, sync::mpsc, thread, time::Duration};
+use std::{
+    collections::HashMap, ops::ControlFlow, path::PathBuf, sync::mpsc, thread, time::Duration,
+};
 
 use ggez::{conf::WindowMode, event, glam::*, graphics, input, Context};
 use rex::{grid::RoomId, space::SpaceAllocation, Door, Node, Room, Wall};
 
+enum MeshProducerData {
+    OnlyFloor0(graphics::MeshBuilder),
+    All(HashMap<i32, graphics::MeshBuilder>),
+}
+
 struct MainState {
     pos: Vec2,
     scale: f32,
-    mesh: graphics::Mesh,
-    mesh_producer: Option<mpsc::Receiver<graphics::MeshBuilder>>,
+    meshes: HashMap<i32, graphics::Mesh>,
+    mesh_producer: Option<mpsc::Receiver<MeshProducerData>>,
     nodes: Vec<rex::Node>,
     radius: f32,
+    current_floor: i32,
 }
 
 impl MainState {
@@ -24,21 +32,16 @@ impl MainState {
         Ok(MainState {
             pos: vec2(-512., -512.),
             scale: 1.,
-            mesh: graphics::Mesh::from_data(
-                ctx,
-                graphics::MeshData {
-                    vertices: &[],
-                    indices: &[],
-                },
-            ),
+            meshes: HashMap::new(),
             mesh_producer: Some(rx),
             nodes,
             radius,
+            current_floor: 0,
         })
     }
 }
 
-fn spawn_mesh_builder(nodes: Vec<rex::Node>, radius: f32) -> mpsc::Receiver<graphics::MeshBuilder> {
+fn spawn_mesh_builder(nodes: Vec<rex::Node>, radius: f32) -> mpsc::Receiver<MeshProducerData> {
     let (tx, rx) = mpsc::channel();
     thread::spawn(move || {
         let start = std::time::Instant::now();
@@ -57,12 +60,12 @@ fn spawn_mesh_builder(nodes: Vec<rex::Node>, radius: f32) -> mpsc::Receiver<grap
                 let mut builder = graphics::MeshBuilder::new();
                 build_room_mesh(
                     &mut builder,
-                    v3.map().cells().filter_map(|(pos, &cell)| {
+                    v3.map()[&0].cells().filter_map(|(pos, &cell)| {
                         cell.map(|id| (ggez::glam::IVec2::new(pos.x, pos.y), id))
                     }),
                 )
                 .unwrap();
-                tx.send(builder).unwrap();
+                tx.send(MeshProducerData::OnlyFloor0(builder)).unwrap();
             }
 
             iterations += 1;
@@ -74,111 +77,32 @@ fn spawn_mesh_builder(nodes: Vec<rex::Node>, radius: f32) -> mpsc::Receiver<grap
             nodes.len(),
             (total_placed as f32 / nodes.len() as f32) * 100.
         );
-        let walls = rex::generate_wall_map(v3.map());
-        let mut builder = graphics::MeshBuilder::new();
-        build_room_mesh(
-            &mut builder,
-            v3.map().cells().filter_map(|(pos, &cell)| {
-                cell.map(|id| (ggez::glam::IVec2::new(pos.x, pos.y), id))
-            }),
-        )
-        .unwrap();
-        build_room_mesh_walls(
-            &mut builder,
-            walls
-                .cells()
-                .map(|(pos, &cell)| (ggez::glam::IVec2::new(pos.x, pos.y), cell)),
-        )
-        .unwrap();
-        tx.send(builder).unwrap();
-        /*
-        let allocator = v3.allocator().clone();
-        log::info!(
-            "Selecting starting positions took {}s in total",
-            (std::time::Instant::now() - start).as_secs_f32()
-        );
-        let room_positions: Vec<_> = v3
-            .room_positions()
-            .iter()
-            .copied()
-            .map(Option::unwrap)
-            .collect();
-        let start = std::time::Instant::now();
-        let mut v3_expand = V3Expand::from_v3(v3);
-        loop {
-            match v3_expand.iterate() {
-                ControlFlow::Break(_) => break,
-                ControlFlow::Continue(_) => {}
-            }
+        tx.send(MeshProducerData::All(
+            v3.map()
+                .iter()
+                .map(|(&floor_idx, map)| {
+                    let walls = rex::generate_wall_map(map);
+                    let mut builder = graphics::MeshBuilder::new();
+                    build_room_mesh(
+                        &mut builder,
+                        map.cells().filter_map(|(pos, &cell)| {
+                            cell.map(|id| (ggez::glam::IVec2::new(pos.x, pos.y), id))
+                        }),
+                    )
+                    .unwrap();
+                    build_room_mesh_walls(
+                        &mut builder,
+                        walls
+                            .cells()
+                            .map(|(pos, &cell)| (ggez::glam::IVec2::new(pos.x, pos.y), cell)),
+                    )
+                    .unwrap();
 
-            let mut builder = graphics::MeshBuilder::new();
-            build_room_mesh(
-                &mut builder,
-                v3_expand.grid().cells().filter_map(|(pos, &cell)| {
-                    cell.map(|id| (ggez::glam::IVec2::new(pos.x, pos.y), id))
-                }),
-            )
-            .unwrap();
-            tx.send(builder).unwrap();
-        }
-        log::info!(
-            "Expanding took {}s in total",
-            (std::time::Instant::now() - start).as_secs_f32()
-        );
-        let start = std::time::Instant::now();
-        let mut v3_fill_gaps = V3FillGaps::from_v3_expand(v3_expand);
-        loop {
-            match v3_fill_gaps.iterate() {
-                ControlFlow::Break(_) => break,
-                ControlFlow::Continue(_) => {}
-            }
-        }
-        log::info!(
-            "Filling gaps took {}s in total",
-            (std::time::Instant::now() - start).as_secs_f32()
-        );
-
-        let walls = rex::generate_wall_map(v3_fill_gaps.grid());
-
-        let mut builder = graphics::MeshBuilder::new();
-        build_room_mesh(
-            &mut builder,
-            v3_fill_gaps.grid().cells().filter_map(|(pos, &cell)| {
-                cell.map(|id| (ggez::glam::IVec2::new(pos.x, pos.y), id))
-            }),
-        )
+                    (floor_idx, builder)
+                })
+                .collect(),
+        ))
         .unwrap();
-        build_room_mesh_walls(
-            &mut builder,
-            walls
-                .cells()
-                .map(|(pos, &cell)| (ggez::glam::IVec2::new(pos.x, pos.y), cell)),
-        )
-        .unwrap();
-        tx.send(builder).unwrap();
-
-        let doors = rex::generate_doors(&room_positions, v3_fill_gaps.grid(), &walls, &nodes);
-        log::info!("Door count: {}", doors.len());
-
-        let mut builder = graphics::MeshBuilder::new();
-        build_room_mesh(
-            &mut builder,
-            v3_fill_gaps.grid().cells().filter_map(|(pos, &cell)| {
-                cell.map(|id| (ggez::glam::IVec2::new(pos.x, pos.y), id))
-            }),
-        )
-        .unwrap();
-        build_room_mesh_walls(
-            &mut builder,
-            walls
-                .cells()
-                .map(|(pos, &cell)| (ggez::glam::IVec2::new(pos.x, pos.y), cell)),
-        )
-        .unwrap();
-        build_room_mesh_doors(&mut builder, doors.iter()).unwrap();
-        build_allocator_mesh(&mut builder, allocator.allocations());
-        build_network_mesh(&mut builder, &nodes, &room_positions);
-        tx.send(builder).unwrap();*/
     });
     rx
 }
@@ -309,7 +233,15 @@ impl event::EventHandler<anyhow::Error> for MainState {
 
         if let Some(rx) = &mut self.mesh_producer {
             match rx.try_recv() {
-                Ok(mesh) => self.mesh = graphics::Mesh::from_data(ctx, mesh.build()),
+                Ok(MeshProducerData::OnlyFloor0(floor0)) => {
+                    self.meshes =
+                        HashMap::from_iter([(0, graphics::Mesh::from_data(ctx, floor0.build()))])
+                }
+                Ok(MeshProducerData::All(floors)) => {
+                    self.meshes = HashMap::from_iter(floors.iter().map(|(&floor_idx, builder)| {
+                        (floor_idx, graphics::Mesh::from_data(ctx, builder.build()))
+                    }))
+                }
                 Err(mpsc::TryRecvError::Empty) => (),
                 Err(mpsc::TryRecvError::Disconnected) => {
                     log::warn!("Mesh producer disconnected");
@@ -329,13 +261,13 @@ impl event::EventHandler<anyhow::Error> for MainState {
             .keyboard
             .is_key_just_pressed(input::keyboard::KeyCode::Up)
         {
-            self.radius += 1.;
+            self.current_floor += 1;
         }
         if ctx
             .keyboard
             .is_key_just_pressed(input::keyboard::KeyCode::Down)
         {
-            self.radius -= 1.;
+            self.current_floor -= 1;
         }
 
         Ok(())
@@ -345,14 +277,26 @@ impl event::EventHandler<anyhow::Error> for MainState {
         let mut canvas =
             graphics::Canvas::from_frame(ctx, graphics::Color::from([0.12, 0.0, 0.21, 1.0]));
 
-        canvas.draw(
-            &self.mesh,
-            graphics::DrawParam::new()
-                .offset(self.pos)
-                .scale(Vec2::splat(self.scale)),
-        );
+        let mut white = 55;
+        for floor_idx in self.current_floor - 1..=self.current_floor {
+            if let Some(floor_mesh) = self.meshes.get(&floor_idx) {
+                canvas.draw(
+                    floor_mesh,
+                    graphics::DrawParam::new()
+                        .offset(self.pos)
+                        .scale(Vec2::splat(self.scale))
+                        .color(graphics::Color::from_rgb(white, white, white)),
+                );
+            }
+            if white < 255 {
+                white += 200;
+            }
+        }
 
-        let mut text = graphics::Text::new(format!("{:.0}", self.pos));
+        let mut text = graphics::Text::new(format!(
+            "Top-left corner: {:.0}\nCurrent floor:{}",
+            self.pos, self.current_floor
+        ));
 
         text.set_bounds(Vec2::new(500.0, f32::INFINITY))
             .set_layout(graphics::TextLayout {
