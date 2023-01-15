@@ -58,17 +58,25 @@ pub fn generate_nodes(path: &Path) -> Result<Vec<Node>> {
             nodes[parent].children.push(node_being_processed_idx);
         }
 
-        for dir_entry in fs::read_dir(&node_being_processed.path)? {
-            let dir_entry = dir_entry?;
+        let dir_entries = fs::read_dir(&node_being_processed.path);
+        match dir_entries {
+            Ok(dir_entries) => {
+                for dir_entry in dir_entries {
+                    let Ok(dir_entry) = dir_entry else { continue; };
 
-            if dir_entry.file_type()?.is_dir() {
-                to_process.push(Node {
-                    path: dir_entry.path(),
-                    parent: Some(node_being_processed_idx),
-                    children: vec![],
-                });
+                    if dir_entry.file_type()?.is_dir() {
+                        to_process.push(Node {
+                            path: dir_entry.path(),
+                            parent: Some(node_being_processed_idx),
+                            children: vec![],
+                        });
+                    }
+                }
             }
+            Err(err) if err.kind() == std::io::ErrorKind::PermissionDenied => (),
+            Err(err) => return Err(err.into()),
         }
+
         nodes.push(node_being_processed);
     }
 
