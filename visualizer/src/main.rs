@@ -51,7 +51,7 @@ fn spawn_mesh_builder(nodes: Vec<rex::Node>) -> mpsc::Receiver<MeshProducerData>
                 ControlFlow::Continue(_) => {}
             }
 
-            if iterations % 5 == 0 {
+            if iterations % 500 == 0 {
                 let mut builder = graphics::MeshBuilder::new();
                 build_room_mesh(
                     &mut builder,
@@ -67,10 +67,11 @@ fn spawn_mesh_builder(nodes: Vec<rex::Node>) -> mpsc::Receiver<MeshProducerData>
         }
         let total_placed = v3.room_positions().iter().filter(|&x| x.is_some()).count();
         log::info!(
-            "Total stats: Placed {}/{} nodes ({:.2}%)",
+            "Total stats: Placed {}/{} nodes ({:.2}%); Teleports used: {}",
             total_placed,
             nodes.len(),
-            (total_placed as f32 / nodes.len() as f32) * 100.
+            (total_placed as f32 / nodes.len() as f32) * 100.,
+            v3.teleports_used()
         );
         tx.send(MeshProducerData::All(
             v3.map()

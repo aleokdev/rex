@@ -12,8 +12,8 @@ use std::{
 
 use ahash::{AHashMap, HashSet};
 use bitflags::bitflags;
-use glam::{ivec2, vec2, IVec2, IVec3, Vec2};
-use grid::{CartesianGrid, CartesianRoomGrid, RoomTemplate};
+use glam::{ivec2, uvec2, vec2, IVec2, IVec3, Vec2};
+use grid::{CartesianGrid, CartesianRoomGrid, GridChunk, RoomTemplate};
 use rand::{seq::SliceRandom, Rng};
 use space::{SpaceAllocation, SpaceAllocator};
 
@@ -99,6 +99,7 @@ pub struct V3 {
     queue: VecDeque<usize>,
     floors: AHashMap<i32, CartesianRoomGrid>,
     allocator: SpaceAllocator,
+    teleports_used: usize,
 }
 
 impl V3 {
@@ -117,41 +118,39 @@ impl V3 {
             queue,
             allocator: SpaceAllocator::default(),
             floors,
+            teleports_used: 0,
         }
     }
 
     pub fn iterate(&mut self, rng: &mut impl Rng) -> ControlFlow<(), ()> {
+        // Take the next node to process, if any. Otherwise we break since we've finished.
         let Some(node_idx) = self.queue.pop_front() else { return ControlFlow::Break(()) };
+        // Fetch some required node data.
         let node = &self.nodes[node_idx];
         let room_pos = self.room_positions[node_idx].unwrap();
         let mut current_floor = room_pos.z;
-        let room_pos = room_pos.truncate();
+        let mut room_pos = room_pos.truncate();
 
+        // Fetch the floor the room should be in, or instantiate it if it doesn't exist yet.
         let floor = self.floors.entry(current_floor).or_default();
         let mut edge_positions: Vec<IVec2> = AdjacentCellsIter::new(floor, node_idx, room_pos)
             .filter(|&pos| floor.cell(pos).copied().flatten().is_none())
             .collect();
         let mut positions_to_expand_to = Vec::new();
         let mut child_idx = 0;
-        let mut to_expand = Vec::new();
-        while edge_positions.len() > 0 && child_idx < node.children.len() {
-            self.room_positions[node.children[child_idx]] =
-                Some(edge_positions.pop().unwrap().extend(current_floor));
-            to_expand.push(child_idx);
-            child_idx += 1;
-            if let Some(x) = edge_positions.pop() {
-                positions_to_expand_to.push(x);
-            }
-            if let Some(x) = edge_positions.pop() {
-                positions_to_expand_to.push(x);
-            }
-            if edge_positions.len() == 0 {
+        let mut first_child_idx_to_expand = 0;
+        let mut num_of_children_to_expand = 0;
+        while child_idx < node.children.len() {
+            while edge_positions.len() == 0 {
+                // Try to expand this room.
                 if let Some(pos) = positions_to_expand_to.choose(rng).copied() {
+                    // If we have space in this floor, expand this room at the same time as the
+                    // children instantiated.
                     let position_to_expand_to = pos;
                     expand_room(
                         self.floors.entry(current_floor).or_default(),
-                        to_expand
-                            .drain(..)
+                        (first_child_idx_to_expand
+                            ..first_child_idx_to_expand + num_of_children_to_expand)
                             .map(|child_idx| node.children[child_idx])
                             .map(|child| {
                                 self.queue.push_back(child);
@@ -159,17 +158,26 @@ impl V3 {
                             })
                             .chain(std::iter::once((node_idx, position_to_expand_to))),
                     );
+                    first_child_idx_to_expand =
+                        first_child_idx_to_expand + num_of_children_to_expand;
+                    num_of_children_to_expand = 0;
                 } else {
+                    // If we don't have any room to expand to, we try to expand to the upper or
+                    // lower floor.
+                    // First expand the children instantiated in this floor.
                     expand_room(
                         self.floors.entry(current_floor).or_default(),
-                        to_expand
-                            .drain(..)
+                        (first_child_idx_to_expand
+                            ..first_child_idx_to_expand + num_of_children_to_expand)
                             .map(|child_idx| node.children[child_idx])
                             .map(|child| {
                                 self.queue.push_back(child);
                                 (child, self.room_positions[child].unwrap().truncate())
                             }),
                     );
+                    first_child_idx_to_expand =
+                        first_child_idx_to_expand + num_of_children_to_expand;
+                    num_of_children_to_expand = 0;
                     let upper_floor = self.floors.entry(current_floor + 1).or_default();
                     if upper_floor.cell(room_pos).is_none() {
                         current_floor += 1;
@@ -178,7 +186,35 @@ impl V3 {
                         if lower_floor.cell(room_pos).is_none() {
                             current_floor -= 1;
                         } else {
-                            break;
+                            // No room: We insert a teleport link. Move by 10 chunks at a time until
+                            // we find an unused chunk, then expand there.
+                            let mut current_chunk =
+                                CartesianRoomGrid::global_coords_to_chunk_and_local_coords(
+                                    room_pos,
+                                )
+                                .0;
+                            let dir = [IVec2::X, IVec2::Y, IVec2::NEG_X, IVec2::NEG_Y]
+                                [rng.gen_range(0..4)];
+
+                            current_chunk += dir * 10;
+                            let floor = self.floors.get_mut(&current_floor).unwrap();
+                            while floor.chunks.contains_key(&current_chunk) {
+                                current_chunk += dir * 10;
+                            }
+
+                            let random_chunk_pos = uvec2(
+                                rng.gen_range(0..GridChunk::<Option<usize>>::CELLS_PER_AXIS),
+                                rng.gen_range(0..GridChunk::<Option<usize>>::CELLS_PER_AXIS),
+                            );
+
+                            room_pos = IVec2::from(
+                                CartesianRoomGrid::chunk_and_local_coords_to_global_coords(
+                                    current_chunk,
+                                    random_chunk_pos,
+                                ),
+                            );
+                            self.room_positions[node_idx] = Some(room_pos.extend(current_floor));
+                            self.teleports_used += 1;
                         }
                     }
                     expand_room(
@@ -193,13 +229,28 @@ impl V3 {
                     .filter(|&pos| floor.cell(pos).copied().flatten().is_none())
                     .collect();
             }
+            self.room_positions[node.children[child_idx]] =
+                Some(edge_positions.pop().unwrap().extend(current_floor));
+            num_of_children_to_expand += 1;
+            child_idx += 1;
+            if let Some(x) = edge_positions.pop() {
+                positions_to_expand_to.push(x);
+            }
+            if let Some(x) = edge_positions.pop() {
+                positions_to_expand_to.push(x);
+            }
+            if let Some(x) = edge_positions.pop() {
+                positions_to_expand_to.push(x);
+            }
+            if let Some(x) = edge_positions.pop() {
+                positions_to_expand_to.push(x);
+            }
         }
 
         expand_room(
             self.floors.entry(current_floor).or_default(),
-            to_expand
-                .iter()
-                .map(|&child_idx| node.children[child_idx])
+            (first_child_idx_to_expand..first_child_idx_to_expand + num_of_children_to_expand)
+                .map(|child_idx| node.children[child_idx])
                 .map(|child| {
                     self.queue.push_back(child);
                     (child, self.room_positions[child].unwrap().truncate())
@@ -223,6 +274,10 @@ impl V3 {
 
     pub fn map(&self) -> &AHashMap<i32, CartesianRoomGrid> {
         &self.floors
+    }
+
+    pub fn teleports_used(&self) -> usize {
+        self.teleports_used
     }
 }
 
@@ -269,9 +324,10 @@ impl Iterator for AdjacentCellsIter<'_> {
         fn rotate_ccw(v: IVec2) -> IVec2 {
             ivec2(v.y, -v.x)
         }
-        // If about to hit the room, rotate counterclockwise
+        // If about to hit the room, rotate counterclockwise (and go backwards if appropiate)
         if self.map.cell(self.edge_pos + self.direction) == Some(&Some(self.id)) {
-            if self.map.cell(self.edge_pos + rotate_ccw(self.direction)) == Some(&Some(self.id)) {
+            while self.map.cell(self.edge_pos + rotate_ccw(self.direction)) == Some(&Some(self.id))
+            {
                 // #|-
                 // #^#
                 // ###
