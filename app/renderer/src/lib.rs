@@ -8,15 +8,12 @@ use crate::abs::{
     uniforms::{ModelUniform, WorldUniform},
 };
 
-use abs::{
-    allocators::{BuddyAllocation, BuddyAllocator},
-    memory::GpuMemory,
-    mesh::GpuIndex,
-};
+use abs::{memory::GpuMemory, mesh::GpuIndex};
 use ash::vk::{self};
 use common::World;
 use glam::Vec4;
 use nonzero_ext::{nonzero, NonZeroAble};
+use space_alloc::{BuddyAllocation, BuddyAllocator};
 
 /// Represents an in-flight render frame.
 pub struct Frame {

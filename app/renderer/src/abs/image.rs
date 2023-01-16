@@ -1,9 +1,7 @@
 use ash::vk;
+use space_alloc::BuddyAllocation;
 
-use super::{
-    allocators::BuddyAllocation,
-    memory::{GpuAllocation, GpuMemory},
-};
+use super::memory::{GpuAllocation, GpuMemory};
 
 #[derive(Debug)]
 pub struct Image {

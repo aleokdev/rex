@@ -1,13 +1,13 @@
 use std::num::NonZeroU64;
 
 use super::{
-    allocators::{self, BuddyAllocation},
     buffer::BufferSlice,
     memory::{cmd_stage, GpuMemory},
     Cx,
 };
 use ash::vk;
 use nonzero_ext::nonzero;
+use space_alloc::BuddyAllocation;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Vertex {
@@ -87,13 +87,13 @@ impl GpuIndex {
     }
 }
 
-pub struct GpuMesh<Allocation: allocators::Allocation = BuddyAllocation> {
+pub struct GpuMesh<Allocation: space_alloc::Allocation = BuddyAllocation> {
     pub vertices: BufferSlice<Allocation>,
     pub indices: BufferSlice<Allocation>,
     pub vertex_count: u32,
 }
 
-impl<Allocation: allocators::Allocation> GpuMesh<Allocation> {
+impl<Allocation: space_alloc::Allocation> GpuMesh<Allocation> {
     pub unsafe fn upload(
         &mut self,
         cx: &mut Cx,

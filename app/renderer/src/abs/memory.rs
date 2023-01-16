@@ -1,15 +1,13 @@
-use crate::abs::allocators::Deallocator;
-
-use super::allocators::linear::LinearAllocation;
-use super::allocators::{self, BuddyAllocation, OutOfMemory};
 use super::{
-    allocators::{BuddyAllocator, LinearAllocator},
     buffer::{Buffer, BufferSlice},
     image::Image,
 };
 use ash::extensions::ext::DebugUtils;
 use ash::vk::{self, Handle};
 use nonzero_ext::NonZeroAble;
+use space_alloc::{
+    linear::LinearAllocation, BuddyAllocation, BuddyAllocator, Deallocator, LinearAllocator,
+};
 use std::ffi::CStr;
 use std::{collections::HashMap, ffi::c_void, num::NonZeroU64};
 
@@ -17,13 +15,13 @@ const DEVICE_BLOCK_SIZE: u64 = 256 * 1024 * 1024;
 const HOST_BLOCK_SIZE: u64 = 64 * 1024 * 1024;
 
 #[derive(Debug)]
-struct MemoryBlock<Allocator: allocators::Allocator> {
+struct MemoryBlock<Allocator: space_alloc::Allocator> {
     raw: vk::DeviceMemory,
     allocator: Allocator,
     mapped: *mut c_void,
 }
 
-impl<Allocator: allocators::Allocator> MemoryBlock<Allocator> {
+impl<Allocator: space_alloc::Allocator> MemoryBlock<Allocator> {
     pub unsafe fn name(
         &self,
         device: vk::Device,
@@ -41,7 +39,7 @@ impl<Allocator: allocators::Allocator> MemoryBlock<Allocator> {
     }
 }
 
-struct MemoryType<Allocator: allocators::Allocator> {
+struct MemoryType<Allocator: space_alloc::Allocator> {
     memory_blocks: Vec<MemoryBlock<Allocator>>,
     memory_props: vk::MemoryPropertyFlags,
     memory_type_index: u32,
@@ -50,14 +48,14 @@ struct MemoryType<Allocator: allocators::Allocator> {
     mapped: bool,
 }
 
-struct MemoryTypeAllocation<Allocation: allocators::Allocation> {
+struct MemoryTypeAllocation<Allocation: space_alloc::Allocation> {
     block_memory: vk::DeviceMemory,
     mapped: *mut c_void,
     block_index: usize,
     allocation: Allocation,
 }
 
-impl<Allocator: allocators::Allocator> MemoryType<Allocator> {
+impl<Allocator: space_alloc::Allocator> MemoryType<Allocator> {
     pub unsafe fn allocate_block(&mut self, device: &ash::Device) -> anyhow::Result<()> {
         let memory = device.allocate_memory(
             &vk::MemoryAllocateInfo::builder()
@@ -97,7 +95,7 @@ impl<Allocator: allocators::Allocator> MemoryType<Allocator> {
         for (i, block) in self.memory_blocks.iter_mut().enumerate() {
             match block.allocator.allocate(size, alignment) {
                 Ok(allocation) => {
-                    use allocators::Allocation;
+                    use space_alloc::Allocation;
                     return Ok(MemoryTypeAllocation {
                         block_memory: block.raw,
                         mapped: block.mapped.add(allocation.offset() as usize),
@@ -385,7 +383,7 @@ impl GpuMemory {
             requirements.alignment.into_nonzero().unwrap(),
         )?;
 
-        use allocators::Allocation;
+        use space_alloc::Allocation;
         self.device.bind_image_memory(
             image,
             allocation.block_memory,
@@ -446,7 +444,7 @@ pub enum AllocatorType {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct GpuAllocation<Allocation: allocators::Allocation> {
+pub struct GpuAllocation<Allocation: space_alloc::Allocation> {
     pub memory: vk::DeviceMemory,
     pub allocation: Allocation,
     pub memory_type_index: u32,
@@ -455,7 +453,7 @@ pub struct GpuAllocation<Allocation: allocators::Allocation> {
     pub mapped: *mut c_void,
 }
 
-impl<Allocation: allocators::Allocation> GpuAllocation<Allocation> {
+impl<Allocation: space_alloc::Allocation> GpuAllocation<Allocation> {
     pub unsafe fn write_mapped<T: Clone>(&self, data: &[T]) -> anyhow::Result<()> {
         if self.mapped.is_null() {
             return Err(anyhow::anyhow!("null mapped ptr"));
@@ -521,7 +519,7 @@ impl MemoryUsage {
 
 /// Queues a copy from src to dst using a newly allocated scratch buffer.
 /// Returns the staging scratch buffer.
-pub unsafe fn cmd_stage<T: Clone, Alloc: allocators::Allocation>(
+pub unsafe fn cmd_stage<T: Clone, Alloc: space_alloc::Allocation>(
     device: &ash::Device,
     scratch: &mut GpuMemory,
     cmd: vk::CommandBuffer,

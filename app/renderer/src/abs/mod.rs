@@ -1,4 +1,3 @@
-pub mod allocators;
 pub mod buffer;
 pub mod cx;
 pub mod descriptor;

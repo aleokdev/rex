@@ -1,20 +1,20 @@
 use std::ffi::{CStr, CString};
 use std::num::NonZeroU64;
 
-use super::allocators::{self, BuddyAllocation, BuddyAllocator};
 use super::memory::{GpuAllocation, GpuMemory, MemoryUsage};
 use ash::extensions::ext::DebugUtils;
 use ash::vk::{self, Handle};
 use nonzero_ext::NonZeroAble;
+use space_alloc::{BuddyAllocation, BuddyAllocator};
 
 #[derive(Debug, Clone)]
-pub struct Buffer<Allocation: allocators::Allocation> {
+pub struct Buffer<Allocation: space_alloc::Allocation> {
     pub raw: vk::Buffer,
     pub info: vk::BufferCreateInfo,
     pub allocation: GpuAllocation<Allocation>,
 }
 
-impl<Allocation: allocators::Allocation> Buffer<Allocation> {
+impl<Allocation: space_alloc::Allocation> Buffer<Allocation> {
     pub unsafe fn name(
         &self,
         device: vk::Device,
@@ -48,7 +48,7 @@ impl Buffer<BuddyAllocation> {
     }
 }
 
-pub struct BufferArena<Allocator: allocators::Allocator> {
+pub struct BufferArena<Allocator: space_alloc::Allocator> {
     buffers: Vec<(Buffer<Allocator::Allocation>, Allocator)>,
     info: vk::BufferCreateInfo,
     usage: MemoryUsage,
@@ -85,8 +85,7 @@ impl BufferArena<BuddyAllocator> {
         utils: &DebugUtils,
         size: NonZeroU64,
     ) -> anyhow::Result<BufferSlice<BuddyAllocation>> {
-        use allocators::Allocation;
-        use allocators::Allocator;
+        use space_alloc::{Allocation, Allocator};
         assert!(size.get() <= self.info.size);
 
         for (buffer, allocator) in &mut self.buffers {
@@ -127,7 +126,7 @@ impl BufferArena<BuddyAllocator> {
 }
 
 #[derive(Debug, Clone)]
-pub struct BufferSlice<Allocation: allocators::Allocation> {
+pub struct BufferSlice<Allocation: space_alloc::Allocation> {
     pub buffer: Buffer<Allocation>,
     pub offset: vk::DeviceAddress,
     pub size: vk::DeviceSize,
