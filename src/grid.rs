@@ -1,9 +1,9 @@
-use std::collections::HashMap;
-
 use ahash::AHashMap;
 use glam::{ivec2, uvec2, vec2, IVec2, UVec2, Vec2};
 use serde::{Deserialize, Serialize};
 use serde_big_array::BigArray;
+
+use crate::math::floordiv;
 
 pub type RoomId = usize;
 
@@ -72,11 +72,9 @@ pub struct CartesianGrid<Cell: Default + Copy> {
 pub mod serialize {
     use std::marker::PhantomData;
 
-    use ahash::{AHashMap, HashMapExt};
+    use ahash::AHashMap;
     use glam::{ivec2, IVec2};
     use serde::{de::Visitor, ser::SerializeMap, Deserialize, Deserializer, Serialize, Serializer};
-
-    use super::GridChunk;
 
     pub fn serialize<S: Serializer, T: Serialize>(
         t: &AHashMap<IVec2, T>,
@@ -192,10 +190,6 @@ impl<Cell: Default + Copy> CartesianGrid<Cell> {
             })
         })
     }
-}
-
-fn floordiv(a: i32, b: i32) -> i32 {
-    (a - if a < 0 { b - 1 } else { 0 }) / b
 }
 
 #[derive(Default, Clone, Copy)]

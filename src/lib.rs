@@ -1,20 +1,20 @@
+pub mod building;
 pub mod grid;
+pub mod math;
+pub mod node;
 pub mod space;
 
+use building::{BuildingMap, FloorMap};
 pub use glam;
+use node::Node;
 use serde::{Deserialize, Serialize};
 
-use std::{
-    collections::VecDeque,
-    fs,
-    ops::ControlFlow,
-    path::{Path, PathBuf},
-};
+use std::{collections::VecDeque, ops::ControlFlow};
 
-use ahash::{AHashMap, HashSet};
+use ahash::HashSet;
 use bitflags::bitflags;
 use glam::{ivec2, uvec2, IVec2, IVec3, Vec2};
-use grid::{CartesianGrid, CartesianRoomGrid, GridChunk, RoomTemplate};
+use grid::{CartesianGrid, CartesianRoomGrid, GridChunk};
 use rand::{seq::SliceRandom, Rng};
 use space::SpaceAllocator;
 
@@ -23,7 +23,6 @@ pub type Result<T> = anyhow::Result<T>;
 
 #[derive(Default, Clone, Serialize, Deserialize)]
 pub struct Room {
-    pub cell_positions: HashSet<IVec3>,
     /// Door positions, in door space.
     pub door_positions: HashSet<IVec3>,
 }
@@ -31,73 +30,9 @@ pub struct Room {
 /// Contains everything related to a rex universe - room positions, doors, teleporters, stairs, etc.
 #[derive(Serialize, Deserialize)]
 pub struct Database {
-    pub room_floors_map: AHashMap<i32, CartesianRoomGrid>,
+    pub map: BuildingMap,
     pub nodes: Vec<Node>,
     pub rooms: Vec<Room>,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct Node {
-    pub path: PathBuf,
-    pub parent: Option<usize>,
-    pub children: Vec<usize>,
-}
-
-/// Returns a node and its children from a directory path.
-pub fn generate_nodes(path: &Path) -> Result<Vec<Node>> {
-    let mut nodes = Vec::<Node>::with_capacity(100);
-
-    let mut to_process = vec![Node {
-        path: path.to_owned(),
-        parent: None,
-        children: vec![],
-    }];
-
-    while let Some(node_being_processed) = to_process.pop() {
-        let node_being_processed_idx = nodes.len();
-
-        if let Some(parent) = node_being_processed.parent {
-            nodes[parent].children.push(node_being_processed_idx);
-        }
-
-        let dir_entries = fs::read_dir(&node_being_processed.path);
-        match dir_entries {
-            Ok(dir_entries) => {
-                for dir_entry in dir_entries {
-                    let Ok(dir_entry) = dir_entry else { continue; };
-
-                    if dir_entry.file_type()?.is_dir() {
-                        to_process.push(Node {
-                            path: dir_entry.path(),
-                            parent: Some(node_being_processed_idx),
-                            children: vec![],
-                        });
-                    }
-                }
-            }
-            Err(err) if err.kind() == std::io::ErrorKind::PermissionDenied => (),
-            Err(err) => return Err(err.into()),
-        }
-
-        nodes.push(node_being_processed);
-    }
-
-    Ok(nodes)
-}
-
-#[derive(Default)]
-pub struct RoomTemplateDb {
-    templates: Vec<RoomTemplate>,
-}
-
-impl RoomTemplateDb {
-    pub fn random(&self, rng: &mut impl Rng) -> Option<&RoomTemplate> {
-        self.templates.choose(rng)
-    }
-
-    pub fn push(&mut self, template: RoomTemplate) {
-        self.templates.push(template)
-    }
 }
 
 pub struct V3 {
@@ -119,9 +54,12 @@ impl V3 {
     pub fn new(nodes: Vec<Node>) -> Self {
         let mut queue = VecDeque::new();
         queue.push_back(0);
-        let mut floors = AHashMap::from_iter([(0, CartesianRoomGrid::default())]);
-        floors.entry(0).or_default().set_cell(IVec2::ZERO, Some(0));
-        expand_room(floors.get_mut(&0).unwrap(), [(0, IVec2::ZERO)].into_iter());
+        let mut map = BuildingMap::default();
+        let floor = map
+            .floor_entry(0)
+            .or_insert_with(|| FloorMap::new(nodes.len()));
+        floor.assign_cell(IVec2::ZERO, 0);
+        expand_room(floor, [(0, IVec2::ZERO)].into_iter());
         let mut room_positions = vec![None; nodes.len()];
         room_positions[0] = Some(IVec3::ZERO);
         Self {
@@ -130,7 +68,7 @@ impl V3 {
             queue,
             allocator: SpaceAllocator::default(),
             database: Database {
-                room_floors_map: floors,
+                map,
                 rooms: vec![Default::default(); nodes.len()],
                 nodes,
             },
@@ -142,9 +80,7 @@ impl V3 {
         // Take the next node to process, if any. Otherwise we break since we've finished.
         let Some(node_idx) = self.queue.pop_front() else { return ControlFlow::Break(V3Data { database: self.database, teleports_used: self.teleports_used } ) };
         let Database {
-            nodes,
-            room_floors_map: floors,
-            rooms,
+            nodes, map: floors, ..
         } = &mut self.database;
         // Fetch some required node data.
         let node = &nodes[node_idx];
@@ -153,9 +89,11 @@ impl V3 {
         let mut room_pos = room_pos.truncate();
 
         // Fetch the floor the room should be in, or instantiate it if it doesn't exist yet.
-        let floor = floors.entry(current_floor).or_default();
+        let floor = floors
+            .floor_entry(current_floor)
+            .or_insert_with(|| FloorMap::new(nodes.len()));
         let mut edge_positions: Vec<IVec2> = AdjacentCellsIter::new(floor, node_idx, room_pos)
-            .filter(|&pos| floor.cell(pos).copied().flatten().is_none())
+            .filter(|&pos| floor.cell(pos).is_none())
             .collect();
         let mut positions_to_expand_to = Vec::new();
         let mut child_idx = 0;
@@ -169,7 +107,9 @@ impl V3 {
                     // children instantiated.
                     let position_to_expand_to = pos;
                     expand_room(
-                        floors.entry(current_floor).or_default(),
+                        floors
+                            .floor_entry(current_floor)
+                            .or_insert_with(|| FloorMap::new(nodes.len())),
                         (first_child_idx_to_expand
                             ..first_child_idx_to_expand + num_of_children_to_expand)
                             .map(|child_idx| node.children[child_idx])
@@ -187,7 +127,9 @@ impl V3 {
                     // lower floor.
                     // First expand the children instantiated in this floor.
                     expand_room(
-                        floors.entry(current_floor).or_default(),
+                        floors
+                            .floor_entry(current_floor)
+                            .or_insert_with(|| FloorMap::new(nodes.len())),
                         (first_child_idx_to_expand
                             ..first_child_idx_to_expand + num_of_children_to_expand)
                             .map(|child_idx| node.children[child_idx])
@@ -199,11 +141,15 @@ impl V3 {
                     first_child_idx_to_expand =
                         first_child_idx_to_expand + num_of_children_to_expand;
                     num_of_children_to_expand = 0;
-                    let upper_floor = floors.entry(current_floor + 1).or_default();
+                    let upper_floor = floors
+                        .floor_entry(current_floor + 1)
+                        .or_insert_with(|| FloorMap::new(nodes.len()));
                     if upper_floor.cell(room_pos).is_none() {
                         current_floor += 1;
                     } else {
-                        let lower_floor = floors.entry(current_floor - 1).or_default();
+                        let lower_floor = floors
+                            .floor_entry(current_floor - 1)
+                            .or_insert_with(|| FloorMap::new(nodes.len()));
                         if lower_floor.cell(room_pos).is_none() {
                             current_floor -= 1;
                         } else {
@@ -218,8 +164,8 @@ impl V3 {
                                 [rng.gen_range(0..4)];
 
                             current_chunk += dir * 10;
-                            let floor = floors.get_mut(&current_floor).unwrap();
-                            while floor.chunks.contains_key(&current_chunk) {
+                            let floor = floors.floor_mut(current_floor).unwrap();
+                            while floor.grid().chunks.contains_key(&current_chunk) {
                                 current_chunk += dir * 10;
                             }
 
@@ -239,15 +185,19 @@ impl V3 {
                         }
                     }
                     expand_room(
-                        floors.entry(current_floor).or_default(),
+                        floors
+                            .floor_entry(current_floor)
+                            .or_insert_with(|| FloorMap::new(nodes.len())),
                         std::iter::once((node_idx, room_pos)),
                     );
                 };
 
-                let floor = floors.entry(current_floor).or_default();
+                let floor = floors
+                    .floor_entry(current_floor)
+                    .or_insert_with(|| FloorMap::new(nodes.len()));
                 positions_to_expand_to.clear();
                 edge_positions = AdjacentCellsIter::new(floor, node_idx, room_pos)
-                    .filter(|&pos| floor.cell(pos).copied().flatten().is_none())
+                    .filter(|&pos| floor.cell(pos).is_none())
                     .collect();
             }
             self.room_positions[node.children[child_idx]] =
@@ -269,7 +219,9 @@ impl V3 {
         }
 
         expand_room(
-            floors.entry(current_floor).or_default(),
+            floors
+                .floor_entry(current_floor)
+                .or_insert_with(|| FloorMap::new(nodes.len())),
             (first_child_idx_to_expand..first_child_idx_to_expand + num_of_children_to_expand)
                 .map(|child_idx| node.children[child_idx])
                 .map(|child| {
@@ -299,7 +251,7 @@ impl V3 {
 }
 
 struct AdjacentCellsIter<'s> {
-    map: &'s CartesianRoomGrid,
+    map: &'s FloorMap,
     id: usize,
     starting_pos: IVec2,
     edge_pos: IVec2,
@@ -308,10 +260,10 @@ struct AdjacentCellsIter<'s> {
 }
 
 impl<'s> AdjacentCellsIter<'s> {
-    fn new(map: &'s CartesianRoomGrid, id: usize, room_pos: IVec2) -> Self {
+    fn new(map: &'s FloorMap, id: usize, room_pos: IVec2) -> Self {
         // Find the room edge by moving towards +X until we aren't in the room any more
         let mut room_edge = room_pos;
-        while map.cell(room_edge) == Some(&Some(id)) {
+        while map.cell(room_edge) == Some(id) {
             room_edge.x += 1;
         }
 
@@ -333,7 +285,7 @@ impl Iterator for AdjacentCellsIter<'_> {
         if self.done {
             return None;
         }
-        assert!(self.map.cell(self.edge_pos) != Some(&Some(self.id)));
+        assert!(self.map.cell(self.edge_pos) != Some(self.id));
 
         fn rotate_cw(v: IVec2) -> IVec2 {
             ivec2(-v.y, v.x)
@@ -342,9 +294,8 @@ impl Iterator for AdjacentCellsIter<'_> {
             ivec2(v.y, -v.x)
         }
         // If about to hit the room, rotate counterclockwise (and go backwards if appropiate)
-        if self.map.cell(self.edge_pos + self.direction) == Some(&Some(self.id)) {
-            while self.map.cell(self.edge_pos + rotate_ccw(self.direction)) == Some(&Some(self.id))
-            {
+        if self.map.cell(self.edge_pos + self.direction) == Some(self.id) {
+            while self.map.cell(self.edge_pos + rotate_ccw(self.direction)) == Some(self.id) {
                 // #|-
                 // #^#
                 // ###
@@ -361,7 +312,7 @@ impl Iterator for AdjacentCellsIter<'_> {
         self.edge_pos += self.direction;
 
         // Skip outer corners
-        if self.map.cell(self.edge_pos + rotate_cw(self.direction)) != Some(&Some(self.id)) {
+        if self.map.cell(self.edge_pos + rotate_cw(self.direction)) != Some(self.id) {
             // #|
             // #|
             // -+
@@ -387,12 +338,12 @@ struct RoomExpansionPositions {
     longest_side_edge: usize,
 }
 
-fn expand_room(map: &mut CartesianRoomGrid, rooms: impl Iterator<Item = (usize, IVec2)>) {
+fn expand_room(floor: &mut FloorMap, rooms: impl Iterator<Item = (usize, IVec2)>) {
     const MAX_LONGEST_SIDE_EDGE: usize = 7;
 
     let mut expandable: Vec<(usize, RoomExpansionPositions)> = rooms
         .map(|(id, pos)| {
-            map.set_cell(pos, Some(id));
+            floor.assign_cell(pos, id);
             (
                 id,
                 RoomExpansionPositions {
@@ -413,14 +364,11 @@ fn expand_room(map: &mut CartesianRoomGrid, rooms: impl Iterator<Item = (usize, 
             if positions.expand_left {
                 let positions_to_expand_to = (positions.nw_corner.y..=positions.se_corner.y)
                     .map(|y| ivec2(positions.nw_corner.x - 1, y));
-                if positions_to_expand_to.clone().all(|pos| {
-                    map.cell(pos)
-                        .copied()
-                        .flatten()
-                        .map(|cell| cell == id)
-                        .unwrap_or(true)
-                }) {
-                    positions_to_expand_to.for_each(|pos| map.set_cell(pos, Some(id)));
+                if positions_to_expand_to
+                    .clone()
+                    .all(|pos| floor.cell(pos).map(|cell| cell == id).unwrap_or(true))
+                {
+                    positions_to_expand_to.for_each(|pos| floor.assign_cell(pos, id));
                     positions.nw_corner.x -= 1;
                 } else {
                     positions.expand_left = false;
@@ -429,14 +377,11 @@ fn expand_room(map: &mut CartesianRoomGrid, rooms: impl Iterator<Item = (usize, 
             if positions.expand_right {
                 let positions_to_expand_to = (positions.nw_corner.y..=positions.se_corner.y)
                     .map(|y| ivec2(positions.se_corner.x + 1, y));
-                if positions_to_expand_to.clone().all(|pos| {
-                    map.cell(pos)
-                        .copied()
-                        .flatten()
-                        .map(|cell| cell == id)
-                        .unwrap_or(true)
-                }) {
-                    positions_to_expand_to.for_each(|pos| map.set_cell(pos, Some(id)));
+                if positions_to_expand_to
+                    .clone()
+                    .all(|pos| floor.cell(pos).map(|cell| cell == id).unwrap_or(true))
+                {
+                    positions_to_expand_to.for_each(|pos| floor.assign_cell(pos, id));
                     positions.se_corner.x += 1;
                 } else {
                     positions.expand_right = false;
@@ -445,14 +390,11 @@ fn expand_room(map: &mut CartesianRoomGrid, rooms: impl Iterator<Item = (usize, 
             if positions.expand_up {
                 let positions_to_expand_to = (positions.nw_corner.x..=positions.se_corner.x)
                     .map(|x| ivec2(x, positions.nw_corner.y - 1));
-                if positions_to_expand_to.clone().all(|pos| {
-                    map.cell(pos)
-                        .copied()
-                        .flatten()
-                        .map(|cell| cell == id)
-                        .unwrap_or(true)
-                }) {
-                    positions_to_expand_to.for_each(|pos| map.set_cell(pos, Some(id)));
+                if positions_to_expand_to
+                    .clone()
+                    .all(|pos| floor.cell(pos).map(|cell| cell == id).unwrap_or(true))
+                {
+                    positions_to_expand_to.for_each(|pos| floor.assign_cell(pos, id));
                     positions.nw_corner.y -= 1;
                 } else {
                     positions.expand_up = false;
@@ -461,14 +403,11 @@ fn expand_room(map: &mut CartesianRoomGrid, rooms: impl Iterator<Item = (usize, 
             if positions.expand_down {
                 let positions_to_expand_to = (positions.nw_corner.x..=positions.se_corner.x)
                     .map(|x| ivec2(x, positions.se_corner.y + 1));
-                if positions_to_expand_to.clone().all(|pos| {
-                    map.cell(pos)
-                        .copied()
-                        .flatten()
-                        .map(|cell| cell == id)
-                        .unwrap_or(true)
-                }) {
-                    positions_to_expand_to.for_each(|pos| map.set_cell(pos, Some(id)));
+                if positions_to_expand_to
+                    .clone()
+                    .all(|pos| floor.cell(pos).map(|cell| cell == id).unwrap_or(true))
+                {
+                    positions_to_expand_to.for_each(|pos| floor.assign_cell(pos, id));
                     positions.se_corner.y += 1;
                 } else {
                     positions.expand_down = false;

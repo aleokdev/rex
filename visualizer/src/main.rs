@@ -9,7 +9,7 @@ use ggez::{
     glam::*,
     graphics, input, Context,
 };
-use rex::{grid::RoomId, space::SpaceAllocation, Door, Node, Wall};
+use rex::{grid::RoomId, node::Node, space::SpaceAllocation, Door, Wall};
 
 enum MeshProducerData {
     OnlyFloor0(graphics::MeshBuilder),
@@ -24,14 +24,14 @@ struct MainState {
     scale: f32,
     meshes: HashMap<i32, graphics::Mesh>,
     mesh_producer: Option<mpsc::Receiver<MeshProducerData>>,
-    nodes: Vec<rex::Node>,
+    nodes: Vec<rex::node::Node>,
     current_floor: i32,
     database: Option<rex::Database>,
 }
 
 impl MainState {
     fn new(path: &std::path::Path, ctx: &mut Context) -> anyhow::Result<MainState> {
-        let nodes = rex::generate_nodes(path)?;
+        let nodes = rex::node::generate_nodes(path)?;
         let rx = spawn_mesh_builder(nodes.clone());
 
         Ok(MainState {
@@ -46,7 +46,7 @@ impl MainState {
     }
 }
 
-fn spawn_mesh_builder(nodes: Vec<rex::Node>) -> mpsc::Receiver<MeshProducerData> {
+fn spawn_mesh_builder(nodes: Vec<rex::node::Node>) -> mpsc::Receiver<MeshProducerData> {
     let (tx, rx) = mpsc::channel();
     thread::spawn(move || {
         let start = std::time::Instant::now();
@@ -65,7 +65,11 @@ fn spawn_mesh_builder(nodes: Vec<rex::Node>) -> mpsc::Receiver<MeshProducerData>
                 let mut builder = graphics::MeshBuilder::new();
                 build_room_mesh(
                     &mut builder,
-                    v3.database().room_floors_map[&0]
+                    v3.database()
+                        .map
+                        .floor(0)
+                        .unwrap()
+                        .grid()
                         .cells()
                         .filter_map(|(pos, &cell)| {
                             cell.map(|id| (ggez::glam::IVec2::new(pos.x, pos.y), id))
@@ -85,14 +89,14 @@ fn spawn_mesh_builder(nodes: Vec<rex::Node>) -> mpsc::Receiver<MeshProducerData>
         tx.send(MeshProducerData::All {
             meshes: v3data
                 .database
-                .room_floors_map
-                .iter()
+                .map
+                .floors()
                 .map(|(&floor_idx, map)| {
-                    let walls = rex::generate_wall_map(map);
+                    let walls = rex::generate_wall_map(map.grid());
                     let mut builder = graphics::MeshBuilder::new();
                     build_room_mesh(
                         &mut builder,
-                        map.cells().filter_map(|(pos, &cell)| {
+                        map.grid().cells().filter_map(|(pos, &cell)| {
                             cell.map(|id| (ggez::glam::IVec2::new(pos.x, pos.y), id))
                         }),
                     )
