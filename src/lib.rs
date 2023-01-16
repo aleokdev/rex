@@ -43,6 +43,7 @@ pub struct Node {
     pub children: Vec<usize>,
 }
 
+/// Returns a node and its children from a directory path.
 pub fn generate_nodes(path: &Path) -> Result<Vec<Node>> {
     let mut nodes = Vec::<Node>::with_capacity(100);
 

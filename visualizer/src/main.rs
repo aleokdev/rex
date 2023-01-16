@@ -3,7 +3,12 @@
 
 use std::{collections::HashMap, ops::ControlFlow, path::PathBuf, sync::mpsc, thread};
 
-use ggez::{conf::WindowMode, event, glam::*, graphics, input, Context};
+use ggez::{
+    conf::{WindowMode, WindowSetup},
+    event,
+    glam::*,
+    graphics, input, Context,
+};
 use rex::{grid::RoomId, space::SpaceAllocation, Door, Node, Wall};
 
 enum MeshProducerData {
@@ -343,8 +348,9 @@ impl event::EventHandler<anyhow::Error> for MainState {
 
 pub fn main() -> anyhow::Result<()> {
     env_logger::init();
-    let cb = ggez::ContextBuilder::new("super_simple", "ggez")
-        .window_mode(WindowMode::default().dimensions(1080., 720.));
+    let cb = ggez::ContextBuilder::new("rexvis", "aleok")
+        .window_mode(WindowMode::default().dimensions(1080., 720.))
+        .window_setup(WindowSetup::default().title("Rex Visualization & Generation Tool"));
     let (mut ctx, event_loop) = cb.build()?;
     let state = MainState::new(
         &std::env::args()
