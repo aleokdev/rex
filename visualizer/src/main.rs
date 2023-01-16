@@ -8,7 +8,10 @@ use rex::{grid::RoomId, space::SpaceAllocation, Door, Node, Wall};
 
 enum MeshProducerData {
     OnlyFloor0(graphics::MeshBuilder),
-    All(HashMap<i32, graphics::MeshBuilder>),
+    All {
+        database: rex::Database,
+        meshes: HashMap<i32, graphics::MeshBuilder>,
+    },
 }
 
 struct MainState {
@@ -18,6 +21,7 @@ struct MainState {
     mesh_producer: Option<mpsc::Receiver<MeshProducerData>>,
     nodes: Vec<rex::Node>,
     current_floor: i32,
+    database: Option<rex::Database>,
 }
 
 impl MainState {
@@ -32,6 +36,7 @@ impl MainState {
             mesh_producer: Some(rx),
             nodes,
             current_floor: 0,
+            database: None,
         })
     }
 }
@@ -45,36 +50,37 @@ fn spawn_mesh_builder(nodes: Vec<rex::Node>) -> mpsc::Receiver<MeshProducerData>
         let mut rng = rand::thread_rng();
         let mut iterations = 0;
 
-        loop {
+        let v3data = loop {
             match v3.iterate(&mut rng) {
-                ControlFlow::Break(_) => break,
-                ControlFlow::Continue(_) => {}
+                ControlFlow::Break(database) => break database,
+                ControlFlow::Continue(cont) => v3 = cont,
             }
 
             if iterations % 500 == 0 {
                 let mut builder = graphics::MeshBuilder::new();
                 build_room_mesh(
                     &mut builder,
-                    v3.map()[&0].cells().filter_map(|(pos, &cell)| {
-                        cell.map(|id| (ggez::glam::IVec2::new(pos.x, pos.y), id))
-                    }),
+                    v3.database().room_floors_map[&0]
+                        .cells()
+                        .filter_map(|(pos, &cell)| {
+                            cell.map(|id| (ggez::glam::IVec2::new(pos.x, pos.y), id))
+                        }),
                 )
                 .unwrap();
                 tx.send(MeshProducerData::OnlyFloor0(builder)).unwrap();
             }
 
             iterations += 1;
-        }
-        let total_placed = v3.room_positions().iter().filter(|&x| x.is_some()).count();
+        };
         log::info!(
-            "Total stats: Placed {}/{} nodes ({:.2}%); Teleports used: {}",
-            total_placed,
-            nodes.len(),
-            (total_placed as f32 / nodes.len() as f32) * 100.,
-            v3.teleports_used()
+            "Total stats: Teleports used: {}. Took {:.3}s.",
+            v3data.teleports_used,
+            (std::time::Instant::now() - start).as_secs_f32()
         );
-        tx.send(MeshProducerData::All(
-            v3.map()
+        tx.send(MeshProducerData::All {
+            meshes: v3data
+                .database
+                .room_floors_map
                 .iter()
                 .map(|(&floor_idx, map)| {
                     let walls = rex::generate_wall_map(map);
@@ -97,7 +103,8 @@ fn spawn_mesh_builder(nodes: Vec<rex::Node>) -> mpsc::Receiver<MeshProducerData>
                     (floor_idx, builder)
                 })
                 .collect(),
-        ))
+            database: v3data.database,
+        })
         .unwrap();
     });
     rx
@@ -233,10 +240,11 @@ impl event::EventHandler<anyhow::Error> for MainState {
                     self.meshes =
                         HashMap::from_iter([(0, graphics::Mesh::from_data(ctx, floor0.build()))])
                 }
-                Ok(MeshProducerData::All(floors)) => {
-                    self.meshes = HashMap::from_iter(floors.iter().map(|(&floor_idx, builder)| {
+                Ok(MeshProducerData::All { meshes, database }) => {
+                    self.meshes = HashMap::from_iter(meshes.iter().map(|(&floor_idx, builder)| {
                         (floor_idx, graphics::Mesh::from_data(ctx, builder.build()))
-                    }))
+                    }));
+                    self.database = Some(database);
                 }
                 Err(mpsc::TryRecvError::Empty) => (),
                 Err(mpsc::TryRecvError::Disconnected) => {
@@ -265,6 +273,20 @@ impl event::EventHandler<anyhow::Error> for MainState {
         {
             self.current_floor -= 1;
         }
+        if let Some(database) = &self.database {
+            if ctx
+                .keyboard
+                .is_key_just_pressed(input::keyboard::KeyCode::S)
+            {
+                match nfd::open_save_dialog(Some("rex"), None) {
+                    Ok(nfd::Response::Okay(file)) => {
+                        serde_json::to_writer(std::fs::File::create(file)?, database)?
+                    }
+                    Err(x) => log::error!("{}", x),
+                    _ => (),
+                }
+            }
+        }
 
         Ok(())
     }
@@ -289,10 +311,16 @@ impl event::EventHandler<anyhow::Error> for MainState {
             }
         }
 
-        let mut text = graphics::Text::new(format!(
-            "Top-left corner: {:.0}\nCurrent floor:{}",
-            self.pos, self.current_floor
-        ));
+        let mut text = graphics::Text::new({
+            let mut text = format!(
+                "Top-left corner: {:.0}\nCurrent floor:{}",
+                self.pos, self.current_floor
+            );
+            if self.database.is_some() {
+                text += "Database available, press S to save";
+            }
+            text
+        });
 
         text.set_bounds(Vec2::new(500.0, f32::INFINITY))
             .set_layout(graphics::TextLayout {

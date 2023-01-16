@@ -7,10 +7,12 @@ edition = "2021"
 members = ["visualizer"]
 
 [dependencies]
-ahash = "0.8.2"
+ahash = { version = "0.8.2", features = ["serde"] }
 anyhow = "1.0.66"
 bitflags = "1.3.2"
-glam = { version = "0.22.0", features = ["mint"] }
+glam = { version = "0.22.0", features = ["mint", "serde"] }
 log = "0.4.17"
 mint = "0.5.9"
 rand = "0.8.5"
+serde = { version = "1.0.152", features = ["derive"] }
+serde-big-array = "0.4.1"

@@ -1,10 +1,16 @@
 use std::collections::HashMap;
 
+use ahash::AHashMap;
 use glam::{ivec2, uvec2, vec2, IVec2, UVec2, Vec2};
+use serde::{Deserialize, Serialize};
+use serde_big_array::BigArray;
 
 pub type RoomId = usize;
 
+#[derive(Serialize, Deserialize)]
 pub struct GridChunk<Cell> {
+    #[serde(with = "BigArray")]
+    #[serde(bound = "Cell: Serialize + for<'ds> Deserialize<'ds>")]
     cells: [Cell; 256], // TODO: Use Self::CELL_COUNT when Rust stabilizes using generic Self types in anonymous constants
 }
 
@@ -56,9 +62,64 @@ impl<Cell> GridChunk<Cell> {
     }
 }
 
-#[derive(Default)]
+#[derive(Default, Serialize, Deserialize)]
 pub struct CartesianGrid<Cell: Default + Copy> {
-    pub chunks: HashMap<IVec2, GridChunk<Cell>>,
+    #[serde(bound = "Cell: Serialize + for<'ds> Deserialize<'ds>")]
+    #[serde(with = "serialize")]
+    pub chunks: AHashMap<IVec2, GridChunk<Cell>>,
+}
+
+pub mod serialize {
+    use std::marker::PhantomData;
+
+    use ahash::{AHashMap, HashMapExt};
+    use glam::{ivec2, IVec2};
+    use serde::{de::Visitor, ser::SerializeMap, Deserialize, Deserializer, Serialize, Serializer};
+
+    use super::GridChunk;
+
+    pub fn serialize<S: Serializer, T: Serialize>(
+        t: &AHashMap<IVec2, T>,
+        s: S,
+    ) -> Result<S::Ok, S::Error> {
+        let mut map = s.serialize_map(Some(t.len()))?;
+        for (k, v) in t {
+            map.serialize_entry(&format!("{},{}", k.x, k.y), v)?;
+        }
+        map.end()
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>, T: Deserialize<'de>>(
+        d: D,
+    ) -> Result<AHashMap<IVec2, T>, D::Error> {
+        struct V<T> {
+            marker: PhantomData<fn() -> T>,
+        }
+        impl<'de, T: Deserialize<'de>> Visitor<'de> for V<T> {
+            type Value = AHashMap<IVec2, T>;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+                formatter.write_str("a key-value map with stringified vectors as key")
+            }
+
+            fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+            where
+                A: serde::de::MapAccess<'de>,
+            {
+                let mut res = AHashMap::with_capacity(map.size_hint().unwrap_or(0));
+                while let Some((key, value)) = map.next_entry::<&str, T>()? {
+                    let (x, y) = key.split_once(',').unwrap();
+                    let (x, y) = (x.parse().unwrap(), y.parse().unwrap());
+                    res.insert(ivec2(x, y), value);
+                }
+
+                Ok(res)
+            }
+        }
+        d.deserialize_map(V {
+            marker: PhantomData::default(),
+        })
+    }
 }
 
 impl<Cell: Default + Copy> CartesianGrid<Cell> {
