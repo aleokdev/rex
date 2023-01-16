@@ -11,3 +11,6 @@ ggez = "0.8.1"
 rex = { path = ".." }
 env_logger = "0.9.3"
 log = "0.4.17"
+rand = "0.8.5"
+nfd = { git = "https://github.com/EmbarkStudios/nfd-rs", branch = "update-submodule" }
+serde_json = "1.0.91"
