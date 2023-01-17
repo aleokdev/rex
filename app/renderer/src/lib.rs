@@ -1,6 +1,6 @@
 pub mod abs;
 
-use std::ffi::CStr;
+use std::{collections::VecDeque, ffi::CStr};
 
 use crate::abs::{
     mesh::GpuVertex,
@@ -8,7 +8,10 @@ use crate::abs::{
     uniforms::{ModelUniform, WorldUniform},
 };
 
-use abs::{memory::GpuMemory, mesh::GpuIndex};
+use abs::{
+    memory::GpuMemory,
+    mesh::{CpuMesh, GpuIndex, Vertex},
+};
 use ash::vk::{self};
 use common::World;
 use glam::Vec4;
@@ -82,7 +85,8 @@ pub struct Renderer {
     pub pass: vk::RenderPass,
     pub framebuffers: Vec<vk::Framebuffer>,
 
-    pub cube: Option<abs::mesh::GpuMesh>,
+    meshes_to_upload: VecDeque<abs::mesh::CpuMesh>,
+    meshes: Vec<abs::mesh::GpuMesh>,
     pub world_uniform: abs::buffer::BufferSlice<BuddyAllocation>,
     pub world_uniform_set: vk::DescriptorSet,
     pub model_uniform: abs::buffer::BufferSlice<BuddyAllocation>,
@@ -332,7 +336,8 @@ impl Renderer {
             pass,
             framebuffers,
 
-            cube: None,
+            meshes_to_upload: Default::default(),
+            meshes: Default::default(),
             world_uniform,
             world_uniform_set,
             model_uniform,
@@ -443,10 +448,14 @@ impl Renderer {
                 .flags(ash::vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT),
         )?;
 
-        // Upload the cube before rendering if we haven't already.
-        let cube = self
-            .cube
-            .get_or_insert_with(|| Self::setup_mesh(cx, &mut self.arenas, &mut frame).unwrap());
+        // Upload one mesh if available from the queue. We avoid uploading more than one per frame
+        // so that we don't impact framerate, but that is a really hacky solution.
+        // HACK: Measure frametime instead and upload as much as possible without sacrificing
+        // framerate, or even better, use a different upload queue for the job.
+        if let Some(mesh) = self.meshes_to_upload.pop_front() {
+            let gpu_mesh = Self::setup_mesh(cx, &mut self.arenas, &mut frame, &mesh)?;
+            self.meshes.push(gpu_mesh);
+        }
 
         // Upload the uniforms for this frame.
         let world_uniform = WorldUniform {
@@ -456,7 +465,7 @@ impl Renderer {
         };
 
         // Rotate at 1 sec / turn
-        self.model_rotation += delta.as_secs_f32() * std::f32::consts::TAU;
+        // self.model_rotation += delta.as_secs_f32() * std::f32::consts::TAU;
 
         let model_uniform = ModelUniform {
             model: glam::Mat4::from_rotation_y(self.model_rotation),
@@ -531,6 +540,7 @@ impl Renderer {
         );
 
         // Bind the camera & model uniform descriptor sets and cube vertex/index buffers.
+        // TODO: Upload model uniforms per-mesh. Store models/objects instead of meshes.
         cx.device.cmd_bind_descriptor_sets(
             frame.cmd,
             vk::PipelineBindPoint::GRAPHICS,
@@ -540,18 +550,24 @@ impl Renderer {
             &[],
         );
 
-        cx.device.cmd_bind_index_buffer(
-            frame.cmd,
-            cube.indices.buffer.raw,
-            0,
-            GpuIndex::index_type(),
-        );
-        cx.device
-            .cmd_bind_vertex_buffers(frame.cmd, 0, &[cube.vertices.buffer.raw], &[0]);
+        for mesh in self.meshes.iter() {
+            cx.device.cmd_bind_index_buffer(
+                frame.cmd,
+                mesh.indices.buffer.raw,
+                mesh.indices.offset,
+                GpuIndex::index_type(),
+            );
+            cx.device.cmd_bind_vertex_buffers(
+                frame.cmd,
+                0,
+                &[mesh.vertices.buffer.raw],
+                &[mesh.vertices.offset],
+            );
 
-        // Draw the mesh taking the index buffer into account.
-        cx.device
-            .cmd_draw_indexed(frame.cmd, cube.vertex_count, 1, 0, 0, 0);
+            // Draw the mesh taking the index buffer into account.
+            cx.device
+                .cmd_draw_indexed(frame.cmd, mesh.vertex_count, 1, 0, 0, 0);
+        }
 
         cx.device.cmd_end_render_pass(frame.cmd);
         cx.device.end_command_buffer(frame.cmd)?;
@@ -595,37 +611,22 @@ impl Renderer {
         cx: &mut abs::Cx,
         arenas: &mut Arenas,
         frame: &mut Frame,
+        mesh: &CpuMesh,
     ) -> anyhow::Result<abs::mesh::GpuMesh> {
-        let model = tobj::load_obj(
-            "app/res/suzanne.obj",
-            &tobj::LoadOptions {
-                ignore_lines: true,
-                ignore_points: true,
-                single_index: true,
-                triangulate: true,
-            },
-        )?
-        .0
-        .into_iter()
-        .next()
-        .unwrap();
-        let mesh = model.mesh;
-        let vertices = mesh
-            .positions
-            .chunks_exact(3)
-            .zip(mesh.normals.chunks_exact(3))
-            .map(|(position, normal)| abs::mesh::GpuVertex {
-                normal: normal.try_into().unwrap(),
-                position: position.try_into().unwrap(),
+        assert_ne!(mesh.vertices.len(), 0, "mesh must not be empty");
+        let gpu_format_vertices = mesh
+            .vertices
+            .iter()
+            .map(|v| GpuVertex {
+                position: v.position.to_array(),
+                normal: v.normal.to_array(),
             })
             .collect::<Vec<_>>();
-        let indices = mesh.indices;
-
         let vertices_gpu = arenas.vertex.suballocate(
             &mut cx.memory,
             cx.device.handle(),
             &cx.debug_utils_loader,
-            (std::mem::size_of_val(&vertices) as u64)
+            ((mesh.vertices.len() * std::mem::size_of::<Vertex>()) as u64)
                 .into_nonzero()
                 .unwrap(),
         )?;
@@ -634,20 +635,30 @@ impl Renderer {
             &mut cx.memory,
             cx.device.handle(),
             &cx.debug_utils_loader,
-            (std::mem::size_of_val(&indices) as u64)
+            ((mesh.indices.len() * std::mem::size_of::<Vertex>()) as u64)
                 .into_nonzero()
                 .unwrap(),
         )?;
 
-        let mut mesh = abs::mesh::GpuMesh {
+        let mut gpu_mesh = abs::mesh::GpuMesh {
             indices: indices_gpu,
             vertices: vertices_gpu,
-            vertex_count: indices.len() as u32,
+            vertex_count: mesh.indices.len() as u32,
         };
 
-        mesh.upload(cx, &mut frame.allocator, frame.cmd, &vertices, &indices)?;
+        gpu_mesh.upload(
+            cx,
+            &mut frame.allocator,
+            frame.cmd,
+            &gpu_format_vertices,
+            &mesh.indices,
+        )?;
 
-        Ok(mesh)
+        Ok(gpu_mesh)
+    }
+
+    pub fn upload_mesh(&mut self, mesh: CpuMesh) {
+        self.meshes_to_upload.push_back(mesh);
     }
 
     pub unsafe fn destroy(mut self, cx: &mut abs::Cx) -> anyhow::Result<()> {
@@ -710,7 +721,7 @@ impl Arenas {
             ),
             index: abs::buffer::BufferArena::new(
                 vk::BufferCreateInfo::builder()
-                    .size(64 * 1024 * std::mem::size_of::<GpuIndex>() as u64)
+                    .size(512 * 1024 * std::mem::size_of::<GpuIndex>() as u64)
                     .usage(vk::BufferUsageFlags::TRANSFER_DST | vk::BufferUsageFlags::INDEX_BUFFER)
                     .sharing_mode(vk::SharingMode::EXCLUSIVE)
                     .build(),

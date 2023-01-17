@@ -105,7 +105,7 @@ pub mod serialize {
                 A: serde::de::MapAccess<'de>,
             {
                 let mut res = AHashMap::with_capacity(map.size_hint().unwrap_or(0));
-                while let Some((key, value)) = map.next_entry::<&str, T>()? {
+                while let Some((key, value)) = map.next_entry::<String, T>()? {
                     let (x, y) = key.split_once(',').unwrap();
                     let (x, y) = (x.parse().unwrap(), y.parse().unwrap());
                     res.insert(ivec2(x, y), value);

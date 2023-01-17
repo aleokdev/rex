@@ -7,6 +7,7 @@ use ash::vk::{self, Handle};
 use nonzero_ext::NonZeroAble;
 use space_alloc::{
     linear::LinearAllocation, BuddyAllocation, BuddyAllocator, Deallocator, LinearAllocator,
+    OutOfMemory,
 };
 use std::ffi::CStr;
 use std::{collections::HashMap, ffi::c_void, num::NonZeroU64};

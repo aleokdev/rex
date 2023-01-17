@@ -115,3 +115,9 @@ impl<Allocation: space_alloc::Allocation> GpuMesh<Allocation> {
         Ok(())
     }
 }
+
+#[derive(Default, Clone)]
+pub struct CpuMesh {
+    pub vertices: Vec<Vertex>,
+    pub indices: Vec<u32>,
+}

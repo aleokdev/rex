@@ -86,7 +86,12 @@ impl BufferArena<BuddyAllocator> {
         size: NonZeroU64,
     ) -> anyhow::Result<BufferSlice<BuddyAllocation>> {
         use space_alloc::{Allocation, Allocator};
-        assert!(size.get() <= self.info.size);
+        assert!(
+            size.get() <= self.info.size,
+            "space tried to suballocate ({}B) was bigger than the entire buffer itself ({}B)",
+            size.get(),
+            self.info.size
+        );
 
         for (buffer, allocator) in &mut self.buffers {
             match allocator.allocate(size, self.alignment) {
