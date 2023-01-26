@@ -363,7 +363,8 @@ impl event::EventHandler<anyhow::Error> for MainState {
                     let room_below_cursor = &database.rooms[room_id_below_cursor];
                     let node = &database.nodes[room_below_cursor.node()];
                     let hover_text = graphics::Text::new(format!(
-                        "room id: {}\nnode id: {}\nnode parent: {:?}\nnode children: {:?}",
+                        "path: {:?}\nroom id: {}\nnode id: {}\nnode parent: {:?}\nnode children: {:?}",
+                        node.path,
                         room_id_below_cursor,
                         room_below_cursor.node(),
                         node.parent,
