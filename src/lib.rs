@@ -101,12 +101,8 @@ impl V3 {
                             .map(|child_idx| nodes[node_idx].children[child_idx])
                             .map(|child_node_id| {
                                 self.queue.push_back(child_node_id);
-                                (
-                                    child_node_id,
-                                    rooms[*nodes[child_node_id].rooms.first().unwrap()]
-                                        .starting_pos()
-                                        .truncate(),
-                                )
+                                let room_id = *nodes[child_node_id].rooms.first().unwrap();
+                                (room_id, rooms[room_id].starting_pos().truncate())
                             })
                             .chain(std::iter::once((
                                 room_id_being_expanded,
@@ -127,12 +123,8 @@ impl V3 {
                             .map(|child_idx| nodes[node_idx].children[child_idx])
                             .map(|child_node_id| {
                                 self.queue.push_back(child_node_id);
-                                (
-                                    child_node_id,
-                                    rooms[*nodes[child_node_id].rooms.first().unwrap()]
-                                        .starting_pos()
-                                        .truncate(),
-                                )
+                                let room_id = *nodes[child_node_id].rooms.first().unwrap();
+                                (room_id, rooms[room_id].starting_pos().truncate())
                             }),
                     );
                     first_child_idx_to_expand =
@@ -239,12 +231,8 @@ impl V3 {
                 .map(|child_idx| nodes[node_idx].children[child_idx])
                 .map(|child_node_id| {
                     self.queue.push_back(child_node_id);
-                    (
-                        child_node_id,
-                        rooms[*nodes[child_node_id].rooms.first().unwrap()]
-                            .starting_pos()
-                            .truncate(),
-                    )
+                    let room_id = *nodes[child_node_id].rooms.first().unwrap();
+                    (room_id, rooms[room_id].starting_pos().truncate())
                 }),
         );
 
