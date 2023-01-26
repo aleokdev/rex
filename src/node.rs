@@ -5,11 +5,14 @@ use std::{
 
 use serde::{Deserialize, Serialize};
 
+pub type NodeId = usize;
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Node {
     pub path: PathBuf,
     pub parent: Option<usize>,
     pub children: Vec<usize>,
+    pub rooms: Vec<usize>,
 }
 
 /// Returns a node and its children from a directory path.
@@ -20,6 +23,7 @@ pub fn generate_nodes(path: &Path) -> crate::Result<Vec<Node>> {
         path: path.to_owned(),
         parent: None,
         children: vec![],
+        rooms: vec![],
     }];
 
     while let Some(node_being_processed) = to_process.pop() {
@@ -40,6 +44,7 @@ pub fn generate_nodes(path: &Path) -> crate::Result<Vec<Node>> {
                             path: dir_entry.path(),
                             parent: Some(node_being_processed_idx),
                             children: vec![],
+                            rooms: vec![],
                         });
                     }
                 }
