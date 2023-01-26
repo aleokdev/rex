@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [workspace]
-members = ["visualizer"]
+members = ["visualizer", "app", "app/renderer", "app/common"]
 
 [dependencies]
 ahash = { version = "0.8.2", features = ["serde"] }
