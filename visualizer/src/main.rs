@@ -266,7 +266,9 @@ impl event::EventHandler<anyhow::Error> for MainState {
             .keyboard
             .is_key_just_pressed(input::keyboard::KeyCode::R)
         {
-            self.mesh_producer = Some(spawn_mesh_builder(self.nodes.clone()))
+            self.mesh_producer = Some(spawn_mesh_builder(self.nodes.clone()));
+            self.database = None;
+            self.meshes.clear();
         }
 
         if ctx
@@ -287,9 +289,10 @@ impl event::EventHandler<anyhow::Error> for MainState {
                 .is_key_just_pressed(input::keyboard::KeyCode::S)
             {
                 match nfd::open_save_dialog(Some("rex"), None) {
-                    Ok(nfd::Response::Okay(file)) => {
-                        serde_json::to_writer(std::fs::File::create(file)?, database)?
-                    }
+                    Ok(nfd::Response::Okay(file)) => serde_json::to_writer(
+                        std::io::BufWriter::new(std::fs::File::create(file)?),
+                        database,
+                    )?,
                     Err(x) => log::error!("{}", x),
                     _ => (),
                 }
@@ -363,12 +366,12 @@ impl event::EventHandler<anyhow::Error> for MainState {
                     let room_below_cursor = &database.rooms[room_id_below_cursor];
                     let node = &database.nodes[room_below_cursor.node()];
                     let hover_text = graphics::Text::new(format!(
-                        "path: {:?}\nroom id: {}\nnode id: {}\nnode parent: {:?}\nnode children: {:?}",
+                        "path: {:?}\nroom id: {}\nnode id: {}\nnode parent: {:?}\nnode children: {}",
                         node.path,
                         room_id_below_cursor,
                         room_below_cursor.node(),
                         node.parent,
-                        node.children
+                        if node.children.len() > 3 { format!("{:?} along others", &node.children[..3])} else { format!("{:?}", &node.children[..])}
                     ));
 
                     canvas.draw(

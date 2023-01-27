@@ -49,11 +49,11 @@ impl V3 {
         queue.push_back(0);
         let mut map = BuildingMap::default();
         let floor = map.floor_entry(0).or_default();
-        floor.assign_cell(IVec2::ZERO, 0);
-        expand_rooms(floor, [(0, IVec2::ZERO)].into_iter());
         // We will allocate at least one room per node, so we preallocate for performance's sake
         let mut rooms = Vec::with_capacity(nodes.len());
-        Self::allocate_room(&mut rooms, &mut nodes[0].rooms, 0, IVec3::ZERO);
+        let root_room = Self::allocate_room(&mut rooms, &mut nodes[0].rooms, 0, IVec3::ZERO);
+        floor.assign_cell(IVec2::ZERO, root_room);
+        expand_rooms(floor, [(0, IVec2::ZERO)].into_iter());
         Self {
             // We start on the root node
             queue,
@@ -134,22 +134,10 @@ impl V3 {
                     // TODO: Take random position within the confines of the room instead of its starting pos for expanding up/down
                     if upper_floor.cell(room_pos).is_none() {
                         current_floor += 1;
-                        room_id_being_expanded = Self::allocate_room(
-                            rooms,
-                            &mut nodes[node_idx].rooms,
-                            node_idx,
-                            room_pos.extend(current_floor),
-                        );
                     } else {
                         let lower_floor = floors.floor_entry(current_floor - 1).or_default();
                         if lower_floor.cell(room_pos).is_none() {
                             current_floor -= 1;
-                            room_id_being_expanded = Self::allocate_room(
-                                rooms,
-                                &mut nodes[node_idx].rooms,
-                                node_idx,
-                                room_pos.extend(current_floor),
-                            );
                         } else {
                             // No room: We insert a teleport link. Move by 10 chunks at a time until
                             // we find an unused chunk, then expand there.
@@ -178,16 +166,16 @@ impl V3 {
                                     random_chunk_pos,
                                 ),
                             );
-                            // Create a new room
-                            room_id_being_expanded = Self::allocate_room(
-                                rooms,
-                                &mut nodes[node_idx].rooms,
-                                node_idx,
-                                room_pos.extend(current_floor),
-                            );
                             self.teleports_used += 1;
                         }
                     }
+                    // Create a new room
+                    room_id_being_expanded = Self::allocate_room(
+                        rooms,
+                        &mut nodes[node_idx].rooms,
+                        node_idx,
+                        room_pos.extend(current_floor),
+                    );
                     expand_rooms(
                         floors.floor_entry(current_floor).or_default(),
                         std::iter::once((room_id_being_expanded, room_pos)),

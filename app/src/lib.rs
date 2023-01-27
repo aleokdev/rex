@@ -19,19 +19,21 @@ struct App {
 impl App {
     unsafe fn new(event_loop: &EventLoop<()>, width: u32, height: u32) -> anyhow::Result<Self> {
         let mut cx = renderer::abs::Cx::new(event_loop, width, height)?;
+        let database = serde_json::from_reader::<_, rex::Database>(std::io::BufReader::new(
+            std::fs::File::open("test.rex").unwrap(),
+        ))?;
         let mut renderer = renderer::Renderer::new(&mut cx)?;
         let world = World {
             camera: Camera::new(cx.width as f32 / cx.height as f32),
         };
 
+        renderer.upload_mesh(meshgen::generate_room_mesh(&database.map, 0));
+
         Ok(App {
             cx,
             renderer,
             world,
-            database: serde_json::from_reader::<std::fs::File, rex::Database>(
-                std::fs::File::open("test.rex").unwrap(),
-            )
-            .unwrap(),
+            database,
         })
     }
 
@@ -48,8 +50,6 @@ pub fn run(width: u32, height: u32) -> anyhow::Result<()> {
     let mut movement_keys_pressed = [false; 6];
     let mut sprint_key_pressed = false;
     let mut focused = false;
-    let mut last_time_added_mesh = std::time::Instant::now();
-    let mut next_room_to_add = 0;
     event_loop.run(move |event, _target, control_flow| {
         let Some(app) = application.as_mut() else { return };
         *control_flow = ControlFlow::Poll;
@@ -58,15 +58,6 @@ pub fn run(width: u32, height: u32) -> anyhow::Result<()> {
         let delta = now_time - last_time;
         let delta_s = delta.as_secs_f32();
         const SPEED: f32 = 100.;
-
-        if now_time - last_time_added_mesh > std::time::Duration::from_millis(200) {
-            app.renderer.upload_mesh(meshgen::generate_room_mesh(
-                &app.database.map,
-                next_room_to_add,
-            ));
-            next_room_to_add += 1;
-            last_time_added_mesh = now_time;
-        }
 
         match event {
             Event::WindowEvent { event, .. } => match event {
