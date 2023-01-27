@@ -76,14 +76,33 @@ impl FloorMap {
     }
 }
 
+#[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum DualNormalDirection {
+    /// The wall's normal is facing either south (+Y) or east (+X).
+    SouthEast,
+    /// The wall's normal is facing either north (-Y) or west (-X).
+    NorthWest,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+pub enum DualPiece {
+    /// A single sided wall.
+    Wall {
+        normal: DualNormalDirection,
+    },
+    Door {
+        normal: DualNormalDirection,
+    },
+}
+
 /// A room inside a building, related to a specific node.
 ///
 /// It holds room-specific data, such as door (& teleporter: TODO) positions.
 // TODO: Store teleporter positions
 #[derive(Clone, Serialize, Deserialize)]
 pub struct Room {
-    /// Door positions, in door space.
-    pub door_positions: AHashSet<IVec3>,
+    /// Walls, doors and anything that's stored in the dual grid space inside the room.
+    pub duals: AHashMap<IVec3, DualPiece>,
     node: NodeId,
     /// The position this room started expanding from.
     ///
@@ -94,7 +113,7 @@ pub struct Room {
 impl Room {
     pub fn new(node: NodeId, starting_pos: IVec3) -> Self {
         Self {
-            door_positions: Default::default(),
+            duals: Default::default(),
             node,
             starting_pos,
         }

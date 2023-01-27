@@ -4,14 +4,14 @@ pub mod math;
 pub mod node;
 pub mod space;
 
-use building::{BuildingMap, FloorMap, Room};
+use building::{BuildingMap, DualNormalDirection, FloorIdx, FloorMap, Room};
 pub use glam;
 use node::{Node, NodeId};
 use serde::{Deserialize, Serialize};
 
 use std::{collections::VecDeque, ops::ControlFlow};
 
-use ahash::HashSet;
+use ahash::{AHashSet, HashSet};
 use bitflags::bitflags;
 use glam::{ivec2, uvec2, IVec2, IVec3, Vec2};
 use grid::{CartesianGrid, CartesianRoomGrid, GridChunk, RoomId};
@@ -127,6 +127,13 @@ impl V3 {
                                 (room_id, rooms[room_id].starting_pos().truncate())
                             }),
                     );
+                    // And generate walls, before we move onto a new room.
+                    Self::calculate_walls(
+                        &mut rooms[room_id_being_expanded],
+                        room_id_being_expanded,
+                        floors.floor_entry(current_floor).or_default(),
+                        current_floor,
+                    );
                     first_child_idx_to_expand =
                         first_child_idx_to_expand + num_of_children_to_expand;
                     num_of_children_to_expand = 0;
@@ -169,6 +176,7 @@ impl V3 {
                             self.teleports_used += 1;
                         }
                     }
+
                     // Create a new room
                     room_id_being_expanded = Self::allocate_room(
                         rooms,
@@ -224,6 +232,13 @@ impl V3 {
                 }),
         );
 
+        Self::calculate_walls(
+            &mut rooms[room_id_being_expanded],
+            room_id_being_expanded,
+            floors.floor_entry(current_floor).or_default(),
+            current_floor,
+        );
+
         ControlFlow::Continue(self)
     }
 
@@ -249,6 +264,28 @@ impl V3 {
         let id = rooms.len() - 1;
         node_rooms.push(id);
         id
+    }
+
+    // XXX: This only works with single floor rooms
+    fn calculate_walls(room: &mut Room, room_id: RoomId, map: &FloorMap, floor_idx: FloorIdx) {
+        let Some(owned_cells) = map.room_cell_positions().get(&room_id) else { return; };
+        for &cell_pos in owned_cells.iter() {
+            let directions = [
+                (Direction::North, DualNormalDirection::SouthEast),
+                (Direction::West, DualNormalDirection::SouthEast),
+                (Direction::South, DualNormalDirection::NorthWest),
+                (Direction::East, DualNormalDirection::NorthWest),
+            ];
+            directions
+                .into_iter()
+                .filter(|(offset, _)| map.cell(cell_pos + IVec2::from(*offset)) != Some(room_id))
+                .for_each(|(dir, normal)| {
+                    room.duals.insert(
+                        cell_to_wall_space(cell_pos, dir).extend(floor_idx),
+                        building::DualPiece::Wall { normal },
+                    );
+                })
+        }
     }
 }
 
@@ -477,11 +514,41 @@ pub fn generate_wall_map(room_map: &CartesianRoomGrid) -> CartesianGrid<Wall> {
     wall_map
 }
 
+#[derive(Debug, Clone, Copy)]
 pub enum Direction {
+    // -Y
     North,
+    // +X
     East,
+    // +Y
     South,
+    // -X
     West,
+}
+
+impl TryFrom<IVec2> for Direction {
+    type Error = ();
+
+    fn try_from(value: IVec2) -> std::result::Result<Self, Self::Error> {
+        match value {
+            IVec2::X => Ok(Direction::East),
+            IVec2::Y => Ok(Direction::South),
+            IVec2::NEG_Y => Ok(Direction::North),
+            IVec2::NEG_X => Ok(Direction::West),
+            _ => Err(()),
+        }
+    }
+}
+
+impl From<Direction> for IVec2 {
+    fn from(value: Direction) -> Self {
+        match value {
+            Direction::North => IVec2::NEG_Y,
+            Direction::East => IVec2::X,
+            Direction::South => IVec2::Y,
+            Direction::West => IVec2::NEG_X,
+        }
+    }
 }
 
 pub fn cell_to_wall_space(pos: IVec2, direction: Direction) -> IVec2 {
@@ -501,6 +568,26 @@ pub fn cell_to_wall_space(pos: IVec2, direction: Direction) -> IVec2 {
             Direction::South => IVec2::ONE,
             Direction::West => IVec2::Y,
         }
+}
+
+#[test]
+fn test_wall_space() {
+    assert_eq!(
+        cell_to_wall_space(ivec2(1, 0), Direction::West),
+        ivec2(1, 0)
+    );
+    assert_eq!(
+        cell_to_wall_space(ivec2(1, 1), Direction::North),
+        ivec2(2, 0)
+    );
+    assert_eq!(
+        cell_to_wall_space(ivec2(-1, 0), Direction::East),
+        ivec2(0, 1)
+    );
+    assert_eq!(
+        cell_to_wall_space(ivec2(1, 2), Direction::South),
+        ivec2(4, 2)
+    );
 }
 
 pub fn door_to_wall_space(pos: IVec2, direction: Direction) -> IVec2 {

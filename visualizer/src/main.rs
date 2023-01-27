@@ -9,7 +9,14 @@ use ggez::{
     graphics::{self, Rect},
     input, Context,
 };
-use rex::{glam::*, grid::RoomId, node::Node, space::SpaceAllocation, Door, Wall};
+use rex::{
+    building::{DualNormalDirection, Room},
+    glam::*,
+    grid::RoomId,
+    node::Node,
+    space::SpaceAllocation,
+    Database, Door, Wall,
+};
 
 enum MeshProducerData {
     OnlyFloor0(graphics::MeshBuilder),
@@ -99,13 +106,10 @@ fn spawn_mesh_builder(nodes: Vec<rex::node::Node>) -> mpsc::Receiver<MeshProduce
                         }),
                     )
                     .unwrap();
-                    build_room_mesh_walls(
-                        &mut builder,
-                        walls
-                            .cells()
-                            .map(|(pos, &cell)| (IVec2::new(pos.x, pos.y), cell)),
-                    )
-                    .unwrap();
+                    map.room_cell_positions().keys().for_each(|&room_id| {
+                        build_room_mesh_walls(&mut builder, &v3data.database.rooms[room_id])
+                            .unwrap()
+                    });
 
                     (floor_idx, builder)
                 })
@@ -115,40 +119,6 @@ fn spawn_mesh_builder(nodes: Vec<rex::node::Node>) -> mpsc::Receiver<MeshProduce
         .unwrap();
     });
     rx
-}
-
-fn build_allocator_mesh<'s>(
-    builder: &mut graphics::MeshBuilder,
-    allocations: impl Iterator<Item = &'s SpaceAllocation>,
-) -> anyhow::Result<()> {
-    for alloc in allocations {
-        builder.circle(
-            graphics::DrawMode::stroke(0.3),
-            alloc.pos,
-            alloc.radius,
-            0.1,
-            graphics::Color::from_rgba(255, 0, 0, 100),
-        )?;
-    }
-
-    Ok(())
-}
-fn build_network_mesh<'s>(
-    builder: &mut graphics::MeshBuilder,
-    nodes: &[Node],
-    node_positions: &[rex::glam::IVec2],
-) -> anyhow::Result<()> {
-    for (id, node) in nodes.iter().enumerate() {
-        let start = node_positions[id];
-        let start = vec2(start.x as f32, start.y as f32);
-        for &child in node.children.iter() {
-            let end = node_positions[child];
-            let end = vec2(end.x as f32, end.y as f32);
-            builder.line(&[start, end], 0.3, graphics::Color::BLUE)?;
-        }
-    }
-
-    Ok(())
 }
 
 fn build_room_mesh(
@@ -170,53 +140,39 @@ fn build_room_mesh(
     Ok(())
 }
 
-fn build_room_mesh_walls(
-    builder: &mut graphics::MeshBuilder,
-    cells: impl Iterator<Item = (IVec2, Wall)>,
-) -> anyhow::Result<()> {
-    for (pos, wall) in cells {
-        let x = pos.x as f32;
-        let y = pos.y as f32;
+fn build_room_mesh_walls(builder: &mut graphics::MeshBuilder, room: &Room) -> anyhow::Result<()> {
+    for (dual_pos, piece) in room.duals.iter() {
         const WALL_WIDTH: f32 = 0.1;
-        let segments = [
-            // North
-            graphics::Rect::new(x + WALL_WIDTH, y, 1.0 - WALL_WIDTH * 2., WALL_WIDTH),
-            // East
-            graphics::Rect::new(
-                x + 1.0 - WALL_WIDTH,
-                y + WALL_WIDTH,
-                WALL_WIDTH,
-                1.0 - WALL_WIDTH * 2.,
-            ),
-            // West
-            graphics::Rect::new(x, y + WALL_WIDTH, WALL_WIDTH, 1.0 - WALL_WIDTH * 2.),
-            // South
-            graphics::Rect::new(
-                x + WALL_WIDTH,
-                y + 1.0 - WALL_WIDTH,
-                1.0 - WALL_WIDTH * 2.,
-                WALL_WIDTH,
-            ),
-            // Northwest
-            graphics::Rect::new(x, y, WALL_WIDTH, WALL_WIDTH),
-            // Northeast
-            graphics::Rect::new(x + 1.0 - WALL_WIDTH, y, WALL_WIDTH, WALL_WIDTH),
-            // Southwest
-            graphics::Rect::new(x, y + 1.0 - WALL_WIDTH, WALL_WIDTH, WALL_WIDTH),
-            // Southeast
-            graphics::Rect::new(
-                x + 1.0 - WALL_WIDTH,
-                y + 1.0 - WALL_WIDTH,
-                WALL_WIDTH,
-                WALL_WIDTH,
-            ),
-        ];
-        for segment_idx in 0..8 {
-            if wall.contains(Wall::from_bits_truncate(1 << segment_idx)) {
-                let segment = segments[segment_idx];
-                builder.rectangle(graphics::DrawMode::fill(), segment, graphics::Color::BLACK)?;
+        let is_horizontal = (dual_pos.x + dual_pos.y) % 2 == 0;
+        let corrected_dual_pos = if is_horizontal {
+            dual_pos.truncate()
+        } else {
+            dual_pos.truncate() - IVec2::Y
+        };
+        let cell_pos = ivec2(
+            (corrected_dual_pos.x - corrected_dual_pos.y) / 2,
+            (corrected_dual_pos.x + corrected_dual_pos.y) / 2,
+        );
+        let mut x = cell_pos.x as f32;
+        let mut y = cell_pos.y as f32;
+        match piece {
+            rex::building::DualPiece::Wall { normal }
+            | rex::building::DualPiece::Door { normal } => {
+                if *normal == DualNormalDirection::NorthWest {
+                    x -= WALL_WIDTH;
+                    y -= WALL_WIDTH;
+                }
             }
         }
+        builder.rectangle(
+            graphics::DrawMode::fill(),
+            if is_horizontal {
+                graphics::Rect::new(x + WALL_WIDTH, y, 1.0 - WALL_WIDTH * 2., WALL_WIDTH)
+            } else {
+                graphics::Rect::new(x, y + WALL_WIDTH, WALL_WIDTH, 1.0 - WALL_WIDTH * 2.)
+            },
+            graphics::Color::MAGENTA,
+        )?;
     }
 
     Ok(())
