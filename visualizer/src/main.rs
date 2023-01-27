@@ -6,10 +6,10 @@ use std::{collections::HashMap, ops::ControlFlow, path::PathBuf, sync::mpsc, thr
 use ggez::{
     conf::{WindowMode, WindowSetup},
     event,
-    glam::*,
-    graphics, input, Context,
+    graphics::{self, Rect},
+    input, Context,
 };
-use rex::{grid::RoomId, node::Node, space::SpaceAllocation, Door, Wall};
+use rex::{glam::*, grid::RoomId, node::Node, space::SpaceAllocation, Door, Wall};
 
 enum MeshProducerData {
     OnlyFloor0(graphics::MeshBuilder),
@@ -21,7 +21,7 @@ enum MeshProducerData {
 
 struct MainState {
     pos: Vec2,
-    scale: f32,
+    proj_width: f32,
     meshes: HashMap<i32, graphics::Mesh>,
     mesh_producer: Option<mpsc::Receiver<MeshProducerData>>,
     nodes: Vec<rex::node::Node>,
@@ -35,8 +35,8 @@ impl MainState {
         let rx = spawn_mesh_builder(nodes.clone());
 
         Ok(MainState {
-            pos: vec2(-512., -512.),
-            scale: 1.,
+            pos: vec2(0., 0.),
+            proj_width: 50.,
             meshes: HashMap::new(),
             mesh_producer: Some(rx),
             nodes,
@@ -71,9 +71,7 @@ fn spawn_mesh_builder(nodes: Vec<rex::node::Node>) -> mpsc::Receiver<MeshProduce
                         .unwrap()
                         .grid()
                         .cells()
-                        .filter_map(|(pos, &cell)| {
-                            cell.map(|id| (ggez::glam::IVec2::new(pos.x, pos.y), id))
-                        }),
+                        .filter_map(|(pos, &cell)| cell.map(|id| (IVec2::new(pos.x, pos.y), id))),
                 )
                 .unwrap();
                 tx.send(MeshProducerData::OnlyFloor0(builder)).unwrap();
@@ -97,7 +95,7 @@ fn spawn_mesh_builder(nodes: Vec<rex::node::Node>) -> mpsc::Receiver<MeshProduce
                     build_room_mesh(
                         &mut builder,
                         map.grid().cells().filter_map(|(pos, &cell)| {
-                            cell.map(|id| (ggez::glam::IVec2::new(pos.x, pos.y), id))
+                            cell.map(|id| (IVec2::new(pos.x, pos.y), id))
                         }),
                     )
                     .unwrap();
@@ -105,7 +103,7 @@ fn spawn_mesh_builder(nodes: Vec<rex::node::Node>) -> mpsc::Receiver<MeshProduce
                         &mut builder,
                         walls
                             .cells()
-                            .map(|(pos, &cell)| (ggez::glam::IVec2::new(pos.x, pos.y), cell)),
+                            .map(|(pos, &cell)| (IVec2::new(pos.x, pos.y), cell)),
                     )
                     .unwrap();
 
@@ -240,7 +238,8 @@ impl event::EventHandler<anyhow::Error> for MainState {
     fn update(&mut self, ctx: &mut Context) -> anyhow::Result<()> {
         if ctx.mouse.button_pressed(input::mouse::MouseButton::Middle) {
             let x: Vec2 = ctx.mouse.delta().into();
-            self.pos -= x / self.scale;
+            let window_size = ctx.gfx.window().inner_size();
+            self.pos -= x * self.proj_width / window_size.width as f32;
         }
 
         if let Some(rx) = &mut self.mesh_producer {
@@ -267,7 +266,9 @@ impl event::EventHandler<anyhow::Error> for MainState {
             .keyboard
             .is_key_just_pressed(input::keyboard::KeyCode::R)
         {
-            self.mesh_producer = Some(spawn_mesh_builder(self.nodes.clone()))
+            self.mesh_producer = Some(spawn_mesh_builder(self.nodes.clone()));
+            self.database = None;
+            self.meshes.clear();
         }
 
         if ctx
@@ -288,9 +289,10 @@ impl event::EventHandler<anyhow::Error> for MainState {
                 .is_key_just_pressed(input::keyboard::KeyCode::S)
             {
                 match nfd::open_save_dialog(Some("rex"), None) {
-                    Ok(nfd::Response::Okay(file)) => {
-                        serde_json::to_writer(std::fs::File::create(file)?, database)?
-                    }
+                    Ok(nfd::Response::Okay(file)) => serde_json::to_writer(
+                        std::io::BufWriter::new(std::fs::File::create(file)?),
+                        database,
+                    )?,
                     Err(x) => log::error!("{}", x),
                     _ => (),
                 }
@@ -304,14 +306,26 @@ impl event::EventHandler<anyhow::Error> for MainState {
         let mut canvas =
             graphics::Canvas::from_frame(ctx, graphics::Color::from([0.12, 0.0, 0.21, 1.0]));
 
+        let window_size = ctx.gfx.window().inner_size();
+        let aspect_ratio = window_size.width as f32 / window_size.height as f32;
+        let half_width = self.proj_width / 2.;
+        canvas.set_screen_coordinates(Rect::new(
+            self.pos.x - half_width,
+            self.pos.y - half_width / aspect_ratio,
+            self.proj_width,
+            self.proj_width / aspect_ratio,
+        ));
+
+        canvas.draw(
+            &graphics::Quad,
+            graphics::DrawParam::new().dest_rect(Rect::new(-0.5, -0.5, 1., 1.)),
+        );
         let mut white = 55;
         for floor_idx in self.current_floor - 1..=self.current_floor {
             if let Some(floor_mesh) = self.meshes.get(&floor_idx) {
                 canvas.draw(
                     floor_mesh,
                     graphics::DrawParam::new()
-                        .offset(self.pos)
-                        .scale(Vec2::splat(self.scale))
                         .color(graphics::Color::from_rgb(white, white, white)),
                 );
             }
@@ -322,14 +336,87 @@ impl event::EventHandler<anyhow::Error> for MainState {
 
         let mut text = graphics::Text::new({
             let mut text = format!(
-                "Top-left corner: {:.0}\nCurrent floor:{}",
+                "Screen center: {:.0}\nCurrent floor:{}",
                 self.pos, self.current_floor
             );
             if self.database.is_some() {
-                text += "Database available, press S to save";
+                text += "\nDatabase available, press S to save";
             }
             text
         });
+        if let Some(database) = &self.database {
+            if let Some(floor) = database.map.floor(self.current_floor) {
+                let screen_coords = canvas.screen_coordinates().unwrap();
+                let mouse_window_pos = Vec2::from(ctx.mouse.position());
+                let to_world_coords = |x: Vec2| -> Vec2 {
+                    x / Vec2::new(window_size.width as f32, window_size.height as f32)
+                        * Vec2::from(screen_coords.size())
+                        + Vec2::from(screen_coords.point())
+                };
+                let to_window_coords = |x: Vec2| -> Vec2 {
+                    (x - Vec2::from(screen_coords.point())) / Vec2::from(screen_coords.size())
+                        * Vec2::new(window_size.width as f32, window_size.height as f32)
+                };
+                let mouse_world_pos = to_world_coords(mouse_window_pos);
+                let mouse_world_pos = mouse_world_pos.as_ivec2();
+
+                text.add(format!("\n{}", mouse_world_pos));
+
+                if let Some(room_id_below_cursor) = floor.cell(mouse_world_pos) {
+                    let room_below_cursor = &database.rooms[room_id_below_cursor];
+                    let node = &database.nodes[room_below_cursor.node()];
+                    let hover_text = graphics::Text::new(format!(
+                        "path: {:?}\nroom id: {}\nnode id: {}\nnode parent: {:?}\nnode children: {}",
+                        node.path,
+                        room_id_below_cursor,
+                        room_below_cursor.node(),
+                        node.parent,
+                        if node.children.len() > 3 { format!("{:?} along others", &node.children[..3])} else { format!("{:?}", &node.children[..])}
+                    ));
+
+                    canvas.draw(
+                        &hover_text,
+                        graphics::DrawParam::default().dest(mouse_window_pos),
+                    );
+
+                    let start_pos = database.rooms[room_id_below_cursor].starting_pos();
+                    let mut builder = graphics::MeshBuilder::new();
+                    if let Some(parent) = node.parent {
+                        let end_pos = database.rooms
+                            [*database.nodes[parent].rooms.first().unwrap()]
+                        .starting_pos();
+                        builder.line(
+                            &[start_pos.truncate().as_vec2(), end_pos.truncate().as_vec2()],
+                            self.proj_width / 100.,
+                            graphics::Color::RED,
+                        )?;
+                    }
+                    for &child in node.children.iter() {
+                        let end_pos = database.rooms[*database.nodes[child].rooms.first().unwrap()]
+                            .starting_pos();
+                        if end_pos.z != start_pos.z {
+                            continue;
+                        }
+                        builder.line(
+                            &[start_pos.truncate().as_vec2(), end_pos.truncate().as_vec2()],
+                            self.proj_width / 100.,
+                            graphics::Color::GREEN,
+                        )?;
+                    }
+                    canvas.draw(
+                        &graphics::Mesh::from_data(&ctx.gfx, builder.build()),
+                        graphics::DrawParam::default(),
+                    );
+                }
+            }
+        }
+
+        canvas.set_screen_coordinates(Rect::new(
+            0.,
+            0.,
+            window_size.width as f32,
+            window_size.height as f32,
+        ));
 
         text.set_bounds(Vec2::new(500.0, f32::INFINITY))
             .set_layout(graphics::TextLayout {
@@ -345,7 +432,7 @@ impl event::EventHandler<anyhow::Error> for MainState {
     }
 
     fn mouse_wheel_event(&mut self, _ctx: &mut Context, _x: f32, y: f32) -> anyhow::Result<()> {
-        self.scale *= 1. + y / 10.;
+        self.proj_width *= 1. - y / 10.;
         Ok(())
     }
 }

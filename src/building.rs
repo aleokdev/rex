@@ -1,18 +1,20 @@
 use ahash::{AHashMap, AHashSet};
-use glam::IVec2;
+use glam::{IVec2, IVec3};
 use serde::{Deserialize, Serialize};
 
-use crate::grid::{CartesianRoomGrid, RoomId};
+use crate::{
+    grid::{CartesianRoomGrid, RoomId},
+    node::NodeId,
+};
 
+pub type FloorIdx = i32;
+
+/// Describes an entire building's floor plan.
+///
+/// This structure holds all grid data, and determines where rooms go.
 #[derive(Default, Serialize, Deserialize)]
 pub struct BuildingMap {
-    floor_maps: AHashMap<i32, FloorMap>,
-}
-
-#[derive(Serialize, Deserialize)]
-pub struct FloorMap {
-    grid: CartesianRoomGrid,
-    room_cell_positions: Vec<AHashSet<IVec2>>,
+    floor_maps: AHashMap<FloorIdx, FloorMap>,
 }
 
 impl BuildingMap {
@@ -33,12 +35,16 @@ impl BuildingMap {
     }
 }
 
+/// Describes a floor plan.
+#[derive(Serialize, Deserialize, Default)]
+pub struct FloorMap {
+    grid: CartesianRoomGrid,
+    room_cell_positions: AHashMap<RoomId, AHashSet<IVec2>>,
+}
+
 impl FloorMap {
-    pub fn new(room_count: usize) -> Self {
-        Self {
-            grid: Default::default(),
-            room_cell_positions: vec![Default::default(); room_count],
-        }
+    pub fn new() -> Self {
+        Self::default()
     }
 
     pub fn cell(&self, pos: impl Into<mint::Vector2<i32>>) -> Option<RoomId> {
@@ -54,7 +60,10 @@ impl FloorMap {
     }
 
     pub fn assign_cell(&mut self, pos: IVec2, value: RoomId) {
-        self.room_cell_positions[value].insert(pos);
+        self.room_cell_positions
+            .entry(value)
+            .or_default()
+            .insert(pos);
         self.grid.set_cell(pos, Some(value));
     }
 
@@ -62,7 +71,40 @@ impl FloorMap {
         &self.grid
     }
 
-    pub fn room_cell_positions(&self) -> &[AHashSet<IVec2>] {
-        self.room_cell_positions.as_ref()
+    pub fn room_cell_positions(&self) -> &AHashMap<RoomId, AHashSet<IVec2>> {
+        &self.room_cell_positions
+    }
+}
+
+/// A room inside a building, related to a specific node.
+///
+/// It holds room-specific data, such as door (& teleporter: TODO) positions.
+// TODO: Store teleporter positions
+#[derive(Clone, Serialize, Deserialize)]
+pub struct Room {
+    /// Door positions, in door space.
+    pub door_positions: AHashSet<IVec3>,
+    node: NodeId,
+    /// The position this room started expanding from.
+    ///
+    /// It is guaranteed that this position will contain a cell with the ID of this room.
+    starting_pos: IVec3,
+}
+
+impl Room {
+    pub fn new(node: NodeId, starting_pos: IVec3) -> Self {
+        Self {
+            door_positions: Default::default(),
+            node,
+            starting_pos,
+        }
+    }
+
+    pub fn starting_pos(&self) -> IVec3 {
+        self.starting_pos
+    }
+
+    pub fn node(&self) -> NodeId {
+        self.node
     }
 }

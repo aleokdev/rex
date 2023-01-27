@@ -4,9 +4,9 @@ pub mod math;
 pub mod node;
 pub mod space;
 
-use building::{BuildingMap, FloorMap};
+use building::{BuildingMap, FloorMap, Room};
 pub use glam;
-use node::Node;
+use node::{Node, NodeId};
 use serde::{Deserialize, Serialize};
 
 use std::{collections::VecDeque, ops::ControlFlow};
@@ -14,18 +14,12 @@ use std::{collections::VecDeque, ops::ControlFlow};
 use ahash::HashSet;
 use bitflags::bitflags;
 use glam::{ivec2, uvec2, IVec2, IVec3, Vec2};
-use grid::{CartesianGrid, CartesianRoomGrid, GridChunk};
+use grid::{CartesianGrid, CartesianRoomGrid, GridChunk, RoomId};
 use rand::{seq::SliceRandom, Rng};
 use space::SpaceAllocator;
 
 // TODO: Custom result type
 pub type Result<T> = anyhow::Result<T>;
-
-#[derive(Default, Clone, Serialize, Deserialize)]
-pub struct Room {
-    /// Door positions, in door space.
-    pub door_positions: HashSet<IVec3>,
-}
 
 /// Contains everything related to a rex universe - room positions, doors, teleporters, stairs, etc.
 #[derive(Serialize, Deserialize)]
@@ -36,7 +30,6 @@ pub struct Database {
 }
 
 pub struct V3 {
-    room_positions: Vec<Option<IVec3>>,
     /// Indicates the nodes that the algorithm has yet to process.
     /// They will be processed from front to back, adding new items to the back.
     queue: VecDeque<usize>,
@@ -51,27 +44,21 @@ pub struct V3Data {
 }
 
 impl V3 {
-    pub fn new(nodes: Vec<Node>) -> Self {
+    pub fn new(mut nodes: Vec<Node>) -> Self {
         let mut queue = VecDeque::new();
         queue.push_back(0);
         let mut map = BuildingMap::default();
-        let floor = map
-            .floor_entry(0)
-            .or_insert_with(|| FloorMap::new(nodes.len()));
-        floor.assign_cell(IVec2::ZERO, 0);
-        expand_room(floor, [(0, IVec2::ZERO)].into_iter());
-        let mut room_positions = vec![None; nodes.len()];
-        room_positions[0] = Some(IVec3::ZERO);
+        let floor = map.floor_entry(0).or_default();
+        // We will allocate at least one room per node, so we preallocate for performance's sake
+        let mut rooms = Vec::with_capacity(nodes.len());
+        let root_room = Self::allocate_room(&mut rooms, &mut nodes[0].rooms, 0, IVec3::ZERO);
+        floor.assign_cell(IVec2::ZERO, root_room);
+        expand_rooms(floor, [(0, IVec2::ZERO)].into_iter());
         Self {
-            room_positions,
             // We start on the root node
             queue,
             allocator: SpaceAllocator::default(),
-            database: Database {
-                map,
-                rooms: vec![Default::default(); nodes.len()],
-                nodes,
-            },
+            database: Database { map, rooms, nodes },
             teleports_used: 0,
         }
     }
@@ -80,44 +67,47 @@ impl V3 {
         // Take the next node to process, if any. Otherwise we break since we've finished.
         let Some(node_idx) = self.queue.pop_front() else { return ControlFlow::Break(V3Data { database: self.database, teleports_used: self.teleports_used } ) };
         let Database {
-            nodes, map: floors, ..
+            nodes,
+            map: floors,
+            rooms,
         } = &mut self.database;
         // Fetch some required node data.
-        let node = &nodes[node_idx];
-        let room_pos = self.room_positions[node_idx].unwrap();
+        let mut room_id_being_expanded = *nodes[node_idx].rooms.first().unwrap();
+        let room_pos = rooms[room_id_being_expanded].starting_pos();
         let mut current_floor = room_pos.z;
         let mut room_pos = room_pos.truncate();
 
         // Fetch the floor the room should be in, or instantiate it if it doesn't exist yet.
-        let floor = floors
-            .floor_entry(current_floor)
-            .or_insert_with(|| FloorMap::new(nodes.len()));
-        let mut edge_positions: Vec<IVec2> = AdjacentCellsIter::new(floor, node_idx, room_pos)
-            .filter(|&pos| floor.cell(pos).is_none())
-            .collect();
+        let floor = floors.floor_entry(current_floor).or_default();
+        let mut edge_positions: Vec<IVec2> =
+            AdjacentCellsIter::new(floor, room_id_being_expanded, room_pos)
+                .filter(|&pos| floor.cell(pos).is_none())
+                .collect();
         let mut positions_to_expand_to = Vec::new();
         let mut child_idx = 0;
         let mut first_child_idx_to_expand = 0;
         let mut num_of_children_to_expand = 0;
-        while child_idx < node.children.len() {
+        while child_idx < nodes[node_idx].children.len() {
             while edge_positions.len() == 0 {
                 // Try to expand this room.
                 if let Some(pos) = positions_to_expand_to.choose(rng).copied() {
                     // If we have space in this floor, expand this room at the same time as the
                     // children instantiated.
                     let position_to_expand_to = pos;
-                    expand_room(
-                        floors
-                            .floor_entry(current_floor)
-                            .or_insert_with(|| FloorMap::new(nodes.len())),
+                    expand_rooms(
+                        floors.floor_entry(current_floor).or_default(),
                         (first_child_idx_to_expand
                             ..first_child_idx_to_expand + num_of_children_to_expand)
-                            .map(|child_idx| node.children[child_idx])
-                            .map(|child| {
-                                self.queue.push_back(child);
-                                (child, self.room_positions[child].unwrap().truncate())
+                            .map(|child_idx| nodes[node_idx].children[child_idx])
+                            .map(|child_node_id| {
+                                self.queue.push_back(child_node_id);
+                                let room_id = *nodes[child_node_id].rooms.first().unwrap();
+                                (room_id, rooms[room_id].starting_pos().truncate())
                             })
-                            .chain(std::iter::once((node_idx, position_to_expand_to))),
+                            .chain(std::iter::once((
+                                room_id_being_expanded,
+                                position_to_expand_to,
+                            ))),
                     );
                     first_child_idx_to_expand =
                         first_child_idx_to_expand + num_of_children_to_expand;
@@ -126,30 +116,26 @@ impl V3 {
                     // If we don't have any room to expand to, we try to expand to the upper or
                     // lower floor.
                     // First expand the children instantiated in this floor.
-                    expand_room(
-                        floors
-                            .floor_entry(current_floor)
-                            .or_insert_with(|| FloorMap::new(nodes.len())),
+                    expand_rooms(
+                        floors.floor_entry(current_floor).or_default(),
                         (first_child_idx_to_expand
                             ..first_child_idx_to_expand + num_of_children_to_expand)
-                            .map(|child_idx| node.children[child_idx])
-                            .map(|child| {
-                                self.queue.push_back(child);
-                                (child, self.room_positions[child].unwrap().truncate())
+                            .map(|child_idx| nodes[node_idx].children[child_idx])
+                            .map(|child_node_id| {
+                                self.queue.push_back(child_node_id);
+                                let room_id = *nodes[child_node_id].rooms.first().unwrap();
+                                (room_id, rooms[room_id].starting_pos().truncate())
                             }),
                     );
                     first_child_idx_to_expand =
                         first_child_idx_to_expand + num_of_children_to_expand;
                     num_of_children_to_expand = 0;
-                    let upper_floor = floors
-                        .floor_entry(current_floor + 1)
-                        .or_insert_with(|| FloorMap::new(nodes.len()));
+                    let upper_floor = floors.floor_entry(current_floor + 1).or_default();
+                    // TODO: Take random position within the confines of the room instead of its starting pos for expanding up/down
                     if upper_floor.cell(room_pos).is_none() {
                         current_floor += 1;
                     } else {
-                        let lower_floor = floors
-                            .floor_entry(current_floor - 1)
-                            .or_insert_with(|| FloorMap::new(nodes.len()));
+                        let lower_floor = floors.floor_entry(current_floor - 1).or_default();
                         if lower_floor.cell(room_pos).is_none() {
                             current_floor -= 1;
                         } else {
@@ -180,28 +166,37 @@ impl V3 {
                                     random_chunk_pos,
                                 ),
                             );
-                            self.room_positions[node_idx] = Some(room_pos.extend(current_floor));
                             self.teleports_used += 1;
                         }
                     }
-                    expand_room(
-                        floors
-                            .floor_entry(current_floor)
-                            .or_insert_with(|| FloorMap::new(nodes.len())),
-                        std::iter::once((node_idx, room_pos)),
+                    // Create a new room
+                    room_id_being_expanded = Self::allocate_room(
+                        rooms,
+                        &mut nodes[node_idx].rooms,
+                        node_idx,
+                        room_pos.extend(current_floor),
+                    );
+                    expand_rooms(
+                        floors.floor_entry(current_floor).or_default(),
+                        std::iter::once((room_id_being_expanded, room_pos)),
                     );
                 };
 
-                let floor = floors
-                    .floor_entry(current_floor)
-                    .or_insert_with(|| FloorMap::new(nodes.len()));
+                let floor = floors.floor_entry(current_floor).or_default();
                 positions_to_expand_to.clear();
-                edge_positions = AdjacentCellsIter::new(floor, node_idx, room_pos)
+                edge_positions = AdjacentCellsIter::new(floor, room_id_being_expanded, room_pos)
                     .filter(|&pos| floor.cell(pos).is_none())
                     .collect();
             }
-            self.room_positions[node.children[child_idx]] =
-                Some(edge_positions.pop().unwrap().extend(current_floor));
+
+            // Allocate a room for the next child
+            let child_node_id = nodes[node_idx].children[child_idx];
+            Self::allocate_room(
+                rooms,
+                &mut nodes[child_node_id].rooms,
+                child_node_id,
+                edge_positions.pop().unwrap().extend(current_floor),
+            );
             num_of_children_to_expand += 1;
             child_idx += 1;
             if let Some(x) = edge_positions.pop() {
@@ -218,23 +213,18 @@ impl V3 {
             }
         }
 
-        expand_room(
-            floors
-                .floor_entry(current_floor)
-                .or_insert_with(|| FloorMap::new(nodes.len())),
+        expand_rooms(
+            floors.floor_entry(current_floor).or_default(),
             (first_child_idx_to_expand..first_child_idx_to_expand + num_of_children_to_expand)
-                .map(|child_idx| node.children[child_idx])
-                .map(|child| {
-                    self.queue.push_back(child);
-                    (child, self.room_positions[child].unwrap().truncate())
+                .map(|child_idx| nodes[node_idx].children[child_idx])
+                .map(|child_node_id| {
+                    self.queue.push_back(child_node_id);
+                    let room_id = *nodes[child_node_id].rooms.first().unwrap();
+                    (room_id, rooms[room_id].starting_pos().truncate())
                 }),
         );
 
         ControlFlow::Continue(self)
-    }
-
-    pub fn room_positions(&self) -> &[Option<IVec3>] {
-        self.room_positions.as_ref()
     }
 
     pub fn allocator(&self) -> &SpaceAllocator {
@@ -248,11 +238,23 @@ impl V3 {
     pub fn database(&self) -> &Database {
         &self.database
     }
+
+    fn allocate_room(
+        rooms: &mut Vec<Room>,
+        node_rooms: &mut Vec<RoomId>,
+        node_id: NodeId,
+        starting_pos: IVec3,
+    ) -> RoomId {
+        rooms.push(Room::new(node_id, starting_pos));
+        let id = rooms.len() - 1;
+        node_rooms.push(id);
+        id
+    }
 }
 
 struct AdjacentCellsIter<'s> {
     map: &'s FloorMap,
-    id: usize,
+    id: RoomId,
     starting_pos: IVec2,
     edge_pos: IVec2,
     direction: IVec2,
@@ -260,7 +262,7 @@ struct AdjacentCellsIter<'s> {
 }
 
 impl<'s> AdjacentCellsIter<'s> {
-    fn new(map: &'s FloorMap, id: usize, room_pos: IVec2) -> Self {
+    fn new(map: &'s FloorMap, id: RoomId, room_pos: IVec2) -> Self {
         // Find the room edge by moving towards +X until we aren't in the room any more
         let mut room_edge = room_pos;
         while map.cell(room_edge) == Some(id) {
@@ -338,7 +340,10 @@ struct RoomExpansionPositions {
     longest_side_edge: usize,
 }
 
-fn expand_room(floor: &mut FloorMap, rooms: impl Iterator<Item = (usize, IVec2)>) {
+/// Expands a set of rooms given by an iterator from the position given.
+///
+/// They will expand until they collide with other rooms or they surpass an expansion limit.
+fn expand_rooms(floor: &mut FloorMap, rooms: impl Iterator<Item = (usize, IVec2)>) {
     const MAX_LONGEST_SIDE_EDGE: usize = 7;
 
     let mut expandable: Vec<(usize, RoomExpansionPositions)> = rooms
@@ -605,11 +610,13 @@ fn test_doors() {
                 children: vec![1],
                 parent: None,
                 path: Default::default(),
+                rooms: vec![0],
             },
             Node {
                 children: vec![],
                 parent: Some(0),
                 path: Default::default(),
+                rooms: vec![1],
             },
         ],
     );

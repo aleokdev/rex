@@ -33,9 +33,11 @@ pub fn generate_room_floor_mesh(
     id: RoomId,
     mesh: &mut CpuMesh,
 ) {
-    for position in floor.room_cell_positions()[id].iter() {
-        let start = vec3(position.x as f32, floor_idx as f32, position.y as f32);
-        add_quad(mesh, start, start + vec3(1., 0., 1.), Vec3::Y);
+    if let Some(positions) = &floor.room_cell_positions().get(&id) {
+        for position in positions.iter() {
+            let start = vec3(position.x as f32, floor_idx as f32, position.y as f32);
+            add_quad(mesh, start, start + vec3(1., 0., 1.), Vec3::Y);
+        }
     }
 }
 
