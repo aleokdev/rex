@@ -65,59 +65,8 @@ impl<Cell> GridChunk<Cell> {
 #[derive(Default, Serialize, Deserialize)]
 pub struct CartesianGrid<Cell: Default + Copy> {
     #[serde(bound = "Cell: Serialize + for<'ds> Deserialize<'ds>")]
-    #[serde(with = "serialize")]
+    #[serde(with = "crate::ser")]
     pub chunks: AHashMap<IVec2, GridChunk<Cell>>,
-}
-
-pub mod serialize {
-    use std::marker::PhantomData;
-
-    use ahash::AHashMap;
-    use glam::{ivec2, IVec2};
-    use serde::{de::Visitor, ser::SerializeMap, Deserialize, Deserializer, Serialize, Serializer};
-
-    pub fn serialize<S: Serializer, T: Serialize>(
-        t: &AHashMap<IVec2, T>,
-        s: S,
-    ) -> Result<S::Ok, S::Error> {
-        let mut map = s.serialize_map(Some(t.len()))?;
-        for (k, v) in t {
-            map.serialize_entry(&format!("{},{}", k.x, k.y), v)?;
-        }
-        map.end()
-    }
-
-    pub fn deserialize<'de, D: Deserializer<'de>, T: Deserialize<'de>>(
-        d: D,
-    ) -> Result<AHashMap<IVec2, T>, D::Error> {
-        struct V<T> {
-            marker: PhantomData<fn() -> T>,
-        }
-        impl<'de, T: Deserialize<'de>> Visitor<'de> for V<T> {
-            type Value = AHashMap<IVec2, T>;
-
-            fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
-                formatter.write_str("a key-value map with stringified vectors as key")
-            }
-
-            fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
-            where
-                A: serde::de::MapAccess<'de>,
-            {
-                let mut res = AHashMap::with_capacity(map.size_hint().unwrap_or(0));
-                while let Some((key, value)) = map.next_entry::<String, T>()? {
-                    let (x, y) = key.split_once(',').unwrap();
-                    let (x, y) = (x.parse().unwrap(), y.parse().unwrap());
-                    res.insert(ivec2(x, y), value);
-                }
-
-                Ok(res)
-            }
-        }
-        d.deserialize_map(V {
-            marker: PhantomData::default(),
-        })
-    }
 }
 
 impl<Cell: Default + Copy> CartesianGrid<Cell> {

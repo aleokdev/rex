@@ -155,6 +155,7 @@ fn build_room_mesh_walls(builder: &mut graphics::MeshBuilder, room: &Room) -> an
         );
         let mut x = cell_pos.x as f32;
         let mut y = cell_pos.y as f32;
+        let color;
         match piece {
             rex::building::DualPiece::Wall { normal }
             | rex::building::DualPiece::Door { normal } => {
@@ -162,7 +163,13 @@ fn build_room_mesh_walls(builder: &mut graphics::MeshBuilder, room: &Room) -> an
                     x -= WALL_WIDTH;
                     y -= WALL_WIDTH;
                 }
+                color = if matches!(piece, rex::building::DualPiece::Wall { .. }) {
+                    graphics::Color::MAGENTA
+                } else {
+                    graphics::Color::BLACK
+                };
             }
+            rex::building::DualPiece::Empty => continue,
         }
         builder.rectangle(
             graphics::DrawMode::fill(),
@@ -171,7 +178,7 @@ fn build_room_mesh_walls(builder: &mut graphics::MeshBuilder, room: &Room) -> an
             } else {
                 graphics::Rect::new(x, y + WALL_WIDTH, WALL_WIDTH, 1.0 - WALL_WIDTH * 2.)
             },
-            graphics::Color::MAGENTA,
+            color,
         )?;
     }
 

@@ -2,9 +2,10 @@ pub mod building;
 pub mod grid;
 pub mod math;
 pub mod node;
+pub mod ser;
 pub mod space;
 
-use building::{BuildingMap, DualNormalDirection, FloorIdx, FloorMap, Room};
+use building::{BuildingMap, DualNormalDirection, DualPiece, FloorIdx, FloorMap, Room};
 pub use glam;
 use node::{Node, NodeId};
 use serde::{Deserialize, Serialize};
@@ -79,9 +80,9 @@ impl V3 {
 
         // Fetch the floor the room should be in, or instantiate it if it doesn't exist yet.
         let floor = floors.floor_entry(current_floor).or_default();
-        let mut edge_positions: Vec<IVec2> =
+        let mut edge_positions: Vec<AdjacentCell> =
             AdjacentCellsIter::new(floor, room_id_being_expanded, room_pos)
-                .filter(|&pos| floor.cell(pos).is_none())
+                .filter(|&AdjacentCell { from, to }| floor.cell(to).is_none())
                 .collect();
         let mut positions_to_expand_to = Vec::new();
         let mut child_idx = 0;
@@ -90,7 +91,9 @@ impl V3 {
         while child_idx < nodes[node_idx].children.len() {
             while edge_positions.len() == 0 {
                 // Try to expand this room.
-                if let Some(pos) = positions_to_expand_to.choose(rng).copied() {
+                if let Some(AdjacentCell { to: pos, .. }) =
+                    positions_to_expand_to.choose(rng).copied()
+                {
                     // If we have space in this floor, expand this room at the same time as the
                     // children instantiated.
                     let position_to_expand_to = pos;
@@ -193,20 +196,41 @@ impl V3 {
                 let floor = floors.floor_entry(current_floor).or_default();
                 positions_to_expand_to.clear();
                 edge_positions = AdjacentCellsIter::new(floor, room_id_being_expanded, room_pos)
-                    .filter(|&pos| floor.cell(pos).is_none())
+                    .filter(|&AdjacentCell { to, .. }| floor.cell(to).is_none())
                     .collect();
             }
 
             // Allocate a room for the next child
+            let AdjacentCell {
+                from: pos_allocated_from,
+                to: pos_allocated_to,
+            } = edge_positions.pop().unwrap();
+            let child_starting_pos = pos_allocated_to.extend(current_floor);
             let child_node_id = nodes[node_idx].children[child_idx];
-            Self::allocate_room(
+            let child_room = Self::allocate_room(
                 rooms,
                 &mut nodes[child_node_id].rooms,
                 child_node_id,
-                edge_positions.pop().unwrap().extend(current_floor),
+                child_starting_pos,
             );
             num_of_children_to_expand += 1;
             child_idx += 1;
+            // Door placement
+            let door_dir = Direction::try_from(pos_allocated_to - pos_allocated_from).unwrap();
+            let door_normal = match door_dir {
+                Direction::North | Direction::West => DualNormalDirection::SouthEast,
+                Direction::South | Direction::East => DualNormalDirection::NorthWest,
+            };
+            let door_pos = cell_to_wall_space(pos_allocated_from, door_dir).extend(current_floor);
+            // On parent
+            rooms[room_id_being_expanded].duals.insert(
+                door_pos,
+                DualPiece::Door {
+                    normal: door_normal,
+                },
+            );
+            // On child
+            rooms[child_room].duals.insert(door_pos, DualPiece::Empty);
             if let Some(x) = edge_positions.pop() {
                 positions_to_expand_to.push(x);
             }
@@ -280,13 +304,19 @@ impl V3 {
                 .into_iter()
                 .filter(|(offset, _)| map.cell(cell_pos + IVec2::from(*offset)) != Some(room_id))
                 .for_each(|(dir, normal)| {
-                    room.duals.insert(
-                        cell_to_wall_space(cell_pos, dir).extend(floor_idx),
-                        building::DualPiece::Wall { normal },
-                    );
+                    let pos = cell_to_wall_space(cell_pos, dir).extend(floor_idx);
+                    room.duals
+                        .entry(pos)
+                        .or_insert(building::DualPiece::Wall { normal });
                 })
         }
     }
+}
+
+#[derive(Clone, Copy)]
+struct AdjacentCell {
+    from: IVec2,
+    to: IVec2,
 }
 
 struct AdjacentCellsIter<'s> {
@@ -318,7 +348,7 @@ impl<'s> AdjacentCellsIter<'s> {
 }
 
 impl Iterator for AdjacentCellsIter<'_> {
-    type Item = IVec2;
+    type Item = AdjacentCell;
 
     fn next(&mut self) -> Option<Self::Item> {
         if self.done {
@@ -348,6 +378,7 @@ impl Iterator for AdjacentCellsIter<'_> {
         }
 
         let result = self.edge_pos;
+        let from = result + rotate_cw(self.direction);
         self.edge_pos += self.direction;
 
         // Skip outer corners
@@ -363,7 +394,7 @@ impl Iterator for AdjacentCellsIter<'_> {
             self.done = true;
         };
 
-        Some(result)
+        Some(AdjacentCell { from, to: result })
     }
 }
 
@@ -524,6 +555,17 @@ pub enum Direction {
     South,
     // -X
     West,
+}
+
+impl Direction {
+    fn opposite(self) -> Self {
+        match self {
+            Direction::North => Direction::South,
+            Direction::East => Direction::West,
+            Direction::South => Direction::North,
+            Direction::West => Direction::East,
+        }
+    }
 }
 
 impl TryFrom<IVec2> for Direction {

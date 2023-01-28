@@ -84,6 +84,15 @@ pub enum DualNormalDirection {
     NorthWest,
 }
 
+impl DualNormalDirection {
+    pub fn inverse(self) -> DualNormalDirection {
+        match self {
+            DualNormalDirection::SouthEast => DualNormalDirection::NorthWest,
+            DualNormalDirection::NorthWest => DualNormalDirection::SouthEast,
+        }
+    }
+}
+
 #[derive(Clone, Serialize, Deserialize)]
 pub enum DualPiece {
     /// A single sided wall.
@@ -93,6 +102,10 @@ pub enum DualPiece {
     Door {
         normal: DualNormalDirection,
     },
+    /// An explicitly empty space. Used, for instance, for door entryways. While non-existing
+    /// entries in the dual space can be overriden by any other piece, using the `Empty` variant
+    /// signifies that the entry should remain as empty space.
+    Empty,
 }
 
 /// A room inside a building, related to a specific node.
@@ -102,6 +115,7 @@ pub enum DualPiece {
 #[derive(Clone, Serialize, Deserialize)]
 pub struct Room {
     /// Walls, doors and anything that's stored in the dual grid space inside the room.
+    #[serde(with = "crate::ser")]
     pub duals: AHashMap<IVec3, DualPiece>,
     node: NodeId,
     /// The position this room started expanding from.
