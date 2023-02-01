@@ -13,6 +13,7 @@ use space_alloc::BuddyAllocation;
 pub struct Vertex {
     pub position: glam::Vec3,
     pub normal: glam::Vec3,
+    pub color: glam::Vec3,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -20,6 +21,7 @@ pub struct Vertex {
 pub struct GpuVertex {
     pub position: [f32; 3],
     pub normal: [f32; 3],
+    pub color: [f32; 3],
 }
 
 pub struct VertexDescription<const BINDINGS: usize, const DESCRIPTIONS: usize> {
@@ -36,7 +38,7 @@ impl<const BINDINGS: usize, const DESCRIPTIONS: usize> VertexDescription<BINDING
 }
 
 impl GpuVertex {
-    pub fn description<'a>() -> VertexDescription<1, 2> {
+    pub fn description<'a>() -> VertexDescription<1, 3> {
         let bindings = [*vk::VertexInputBindingDescription::builder()
             .binding(0)
             .input_rate(vk::VertexInputRate::VERTEX)
@@ -51,7 +53,12 @@ impl GpuVertex {
                 .binding(0)
                 .location(1)
                 .format(vk::Format::R32G32B32_SFLOAT)
-                .offset(12),
+                .offset(4 * 3),
+            *vk::VertexInputAttributeDescription::builder()
+                .binding(0)
+                .location(2)
+                .format(vk::Format::R32G32B32_SFLOAT)
+                .offset(4 * 6),
         ];
         VertexDescription {
             bindings,

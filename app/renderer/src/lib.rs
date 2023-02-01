@@ -620,6 +620,7 @@ impl Renderer {
             .map(|v| GpuVertex {
                 position: v.position.to_array(),
                 normal: v.normal.to_array(),
+                color: v.color.to_array(),
             })
             .collect::<Vec<_>>();
         let vertices_gpu = arenas.vertex.suballocate(

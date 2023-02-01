@@ -1,1 +1,1 @@
-glslc tri.vert -o tri.vert.spv && glslc tri.frag -o tri.frag.spv
+glslc basic.vert -o basic.vert.spv && glslc basic.frag -o basic.frag.spv

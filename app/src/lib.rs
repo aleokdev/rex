@@ -2,6 +2,7 @@ mod meshgen;
 
 use common::{Camera, World};
 use glam::Vec3;
+use renderer::abs::mesh::{self, CpuMesh};
 use winit::{
     dpi::{PhysicalPosition, PhysicalSize},
     event::{ElementState, Event, WindowEvent},
@@ -27,7 +28,33 @@ impl App {
             camera: Camera::new(cx.width as f32 / cx.height as f32),
         };
 
-        renderer.upload_mesh(meshgen::generate_room_mesh(&database.map, 0));
+        renderer.upload_mesh(meshgen::generate_room_mesh(&database, 0));
+        let models = tobj::load_obj(
+            "app/res/xyz_gizmo.obj",
+            &tobj::LoadOptions {
+                ignore_lines: true,
+                ignore_points: true,
+                single_index: true,
+                triangulate: true,
+            },
+        )?
+        .0;
+        for model in models {
+            let mesh = model.mesh;
+            let vertices = mesh
+                .positions
+                .chunks_exact(3)
+                .zip(mesh.normals.chunks_exact(3))
+                .zip(mesh.vertex_color.chunks_exact(3))
+                .map(|((position, normal), color)| mesh::Vertex {
+                    position: <[f32; 3]>::try_from(position).unwrap().into(),
+                    normal: <[f32; 3]>::try_from(normal).unwrap().into(),
+                    color: <[f32; 3]>::try_from(color).unwrap().into(),
+                })
+                .collect::<Vec<_>>();
+            let indices = mesh.indices;
+            renderer.upload_mesh(CpuMesh { vertices, indices });
+        }
 
         Ok(App {
             cx,

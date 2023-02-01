@@ -1,5 +1,7 @@
 use glam::{Mat4, Vec3, Vec4};
 
+use crate::coords;
+
 pub struct Camera {
     near: f32,
     far: f32,
@@ -30,8 +32,8 @@ impl Camera {
             fovy: 60.0f32.to_radians(),
 
             position: glam::Vec3::ZERO,
-            up: glam::Vec3::Y,
-            forward: glam::Vec3::X,
+            up: coords::UP,
+            forward: coords::NORTH,
 
             yaw: 0.,
             pitch: 0.,
@@ -51,11 +53,9 @@ impl Camera {
         self.yaw += dx;
         self.pitch = (self.pitch + dy).clamp(-Self::PITCH_ANGLE_LIMIT, Self::PITCH_ANGLE_LIMIT);
 
-        let dir = glam::Vec3::new(
-            self.yaw.cos() * self.pitch.cos(),
-            self.pitch.sin(),
-            self.yaw.sin() * self.pitch.cos(),
-        );
+        let dir = self.pitch.sin() * coords::UP
+            + self.yaw.cos() * self.pitch.cos() * coords::NORTH
+            + self.yaw.sin() * self.pitch.cos() * coords::NORTH.cross(coords::UP);
 
         self.forward = dir.normalize();
     }
