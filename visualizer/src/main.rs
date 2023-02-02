@@ -13,9 +13,6 @@ use rex::{
     building::{DualNormalDirection, Room},
     glam::*,
     grid::RoomId,
-    node::Node,
-    space::SpaceAllocation,
-    Database, Door, Wall,
 };
 
 enum MeshProducerData {
@@ -37,7 +34,7 @@ struct MainState {
 }
 
 impl MainState {
-    fn new(path: &std::path::Path, ctx: &mut Context) -> anyhow::Result<MainState> {
+    fn new(path: &std::path::Path, _ctx: &mut Context) -> anyhow::Result<MainState> {
         let nodes = rex::node::generate_nodes(path)?;
         let rx = spawn_mesh_builder(nodes.clone());
 
@@ -97,7 +94,6 @@ fn spawn_mesh_builder(nodes: Vec<rex::node::Node>) -> mpsc::Receiver<MeshProduce
                 .map
                 .floors()
                 .map(|(&floor_idx, map)| {
-                    let walls = rex::generate_wall_map(map.grid());
                     let mut builder = graphics::MeshBuilder::new();
                     build_room_mesh(
                         &mut builder,
@@ -182,18 +178,6 @@ fn build_room_mesh_walls(builder: &mut graphics::MeshBuilder, room: &Room) -> an
         )?;
     }
 
-    Ok(())
-}
-
-fn build_room_mesh_doors<'s>(
-    builder: &mut graphics::MeshBuilder,
-    doors: impl Iterator<Item = &'s Door>,
-) -> anyhow::Result<()> {
-    for door in doors {
-        let start_point = vec2(door.position.x, door.position.y);
-        let end_point = start_point + vec2(door.rotation.cos(), door.rotation.sin());
-        builder.line(&[start_point, end_point], 0.2, graphics::Color::BLUE)?;
-    }
     Ok(())
 }
 
@@ -316,10 +300,12 @@ impl event::EventHandler<anyhow::Error> for MainState {
                         * Vec2::from(screen_coords.size())
                         + Vec2::from(screen_coords.point())
                 };
+                /*
                 let to_window_coords = |x: Vec2| -> Vec2 {
                     (x - Vec2::from(screen_coords.point())) / Vec2::from(screen_coords.size())
                         * Vec2::new(window_size.width as f32, window_size.height as f32)
                 };
+                */
                 let mouse_world_pos = to_world_coords(mouse_window_pos);
                 let mouse_world_pos = mouse_world_pos.as_ivec2();
 

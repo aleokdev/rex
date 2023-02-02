@@ -82,7 +82,7 @@ impl V3 {
         let floor = floors.floor_entry(current_floor).or_default();
         let mut edge_positions: Vec<AdjacentCell> =
             AdjacentCellsIter::new(floor, room_id_being_expanded, room_pos)
-                .filter(|&AdjacentCell { from, to }| floor.cell(to).is_none())
+                .filter(|&AdjacentCell { to, .. }| floor.cell(to).is_none())
                 .collect();
         let mut positions_to_expand_to = Vec::new();
         let mut child_idx = 0;
@@ -499,52 +499,6 @@ fn expand_rooms(floor: &mut FloorMap, rooms: impl Iterator<Item = (usize, IVec2)
     }
 }
 
-bitflags! {
-    #[derive(Default)]
-    pub struct Wall: u8 {
-        const North = 1 << 0;
-        const East = 1 << 1;
-        const West = 1 << 2;
-        const South = 1 << 3;
-        const NorthWestCorner = 1 << 4;
-        const NorthEastCorner = 1 << 5;
-        const SouthWestCorner = 1 << 6;
-        const SouthEastCorner = 1 << 7;
-    }
-}
-
-pub fn generate_wall_map(room_map: &CartesianRoomGrid) -> CartesianGrid<Wall> {
-    let mut wall_map = CartesianGrid::default();
-    for (pos, &cell) in room_map.cells() {
-        if let Some(cell) = cell {
-            let directions = [
-                ivec2(0, -1),
-                ivec2(1, 0),
-                ivec2(-1, 0),
-                ivec2(0, 1),
-                ivec2(-1, -1),
-                ivec2(1, -1),
-                ivec2(-1, 1),
-                ivec2(1, 1),
-            ];
-            let wall = directions
-                .into_iter()
-                .map(|offset| pos + offset)
-                .enumerate()
-                .fold(Wall::empty(), |wall, (idx, pos)| {
-                    if room_map.cell(pos) != Some(&Some(cell)) {
-                        wall | Wall::from_bits_truncate(1 << idx)
-                    } else {
-                        wall
-                    }
-                });
-
-            wall_map.set_cell(pos, wall);
-        }
-    }
-    wall_map
-}
-
 #[derive(Debug, Clone, Copy)]
 pub enum Direction {
     // -Y
@@ -558,6 +512,7 @@ pub enum Direction {
 }
 
 impl Direction {
+    #[allow(dead_code)]
     fn opposite(self) -> Self {
         match self {
             Direction::North => Direction::South,
@@ -653,7 +608,6 @@ pub struct Door {
 pub fn generate_doors(
     room_positions: &[IVec2],
     room_map: &CartesianRoomGrid,
-    wall_map: &CartesianGrid<Wall>,
     nodes: &[Node],
 ) -> Vec<Door> {
     let mut doors = Vec::with_capacity(nodes.len());
@@ -722,31 +676,4 @@ pub fn generate_doors(
     }
 
     doors
-}
-
-#[test]
-#[cfg(test)]
-fn test_doors() {
-    let mut map = CartesianRoomGrid::default();
-    map.set_cell(ivec2(0, 0), Some(0));
-    map.set_cell(ivec2(1, 0), Some(1));
-    generate_doors(
-        &[ivec2(0, 0), ivec2(1, 0)],
-        &map,
-        &Default::default(),
-        &[
-            Node {
-                children: vec![1],
-                parent: None,
-                path: Default::default(),
-                rooms: vec![0],
-            },
-            Node {
-                children: vec![],
-                parent: Some(0),
-                path: Default::default(),
-                rooms: vec![1],
-            },
-        ],
-    );
 }

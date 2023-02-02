@@ -178,7 +178,7 @@ impl GpuMemory {
         })
     }
 
-    pub unsafe fn free_scratch(&mut self) -> anyhow::Result<()> {
+    pub unsafe fn free_scratch(&mut self) {
         for memory_type in self.linear_linear.values_mut() {
             for block in &mut memory_type.memory_blocks {
                 block.allocator.reset();
@@ -188,8 +188,6 @@ impl GpuMemory {
         for buffer in self.scratch.drain(..) {
             self.device.destroy_buffer(buffer, None);
         }
-
-        Ok(())
     }
 
     unsafe fn allocate_scratch(

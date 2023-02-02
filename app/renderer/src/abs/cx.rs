@@ -28,11 +28,15 @@ pub struct SwapchainTexture {
 pub struct SwapchainTextures(pub Vec<SwapchainTexture>);
 
 impl SwapchainTextures {
-    pub unsafe fn destroy(&mut self, device: &ash::Device, memory: &mut GpuMemory) {
-        self.0.drain(..).for_each(|img| {
+    pub unsafe fn destroy(
+        &mut self,
+        device: &ash::Device,
+        memory: &mut GpuMemory,
+    ) -> anyhow::Result<()> {
+        self.0.drain(..).try_for_each(|img| {
             device.destroy_image_view(img.color.view, None);
-            img.depth.destroy(&device, memory);
-        });
+            img.depth.destroy(&device, memory)
+        })
     }
 }
 
@@ -258,7 +262,7 @@ impl Cx {
 
         self.device.device_wait_idle()?;
 
-        old_swapchain_images.destroy(&self.device, &mut self.memory);
+        old_swapchain_images.destroy(&self.device, &mut self.memory)?;
         self.swapchain_loader.destroy_swapchain(old_swapchain, None);
 
         self.width = width;
@@ -405,11 +409,12 @@ impl Cx {
 impl Drop for Cx {
     fn drop(&mut self) {
         unsafe {
-            self.device.device_wait_idle();
+            self.device.device_wait_idle().unwrap();
             self.swapchain_loader
                 .destroy_swapchain(self.swapchain, None);
             self.swapchain_images
-                .destroy(&self.device, &mut self.memory);
+                .destroy(&self.device, &mut self.memory)
+                .unwrap();
             self.surface_loader.destroy_surface(self.surface, None);
             self.device.destroy_device(None);
             self.debug_utils_loader

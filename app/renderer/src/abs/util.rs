@@ -1,8 +1,5 @@
 use ash::vk;
-use std::{
-    num::NonZeroU64,
-    ops::{Bound, RangeBounds},
-};
+use std::ops::{Bound, RangeBounds};
 
 pub fn subresource_range(
     aspect_mask: vk::ImageAspectFlags,

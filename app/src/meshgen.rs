@@ -2,15 +2,9 @@ use glam::{ivec2, vec3, IVec2, Vec3};
 use renderer::abs::mesh::{CpuMesh, Vertex};
 use rex::{
     building::{DualNormalDirection, Room},
-    grid::{CartesianGrid, RoomId},
+    grid::RoomId,
     Database,
 };
-
-pub fn generate_test() -> CpuMesh {
-    let mut mesh = CpuMesh::default();
-    add_quad(&mut mesh, Vec3::ZERO, vec3(1., 0., 1.), Vec3::Y);
-    mesh
-}
 
 pub fn generate_room_mesh(db: &Database, id: RoomId) -> CpuMesh {
     let mut mesh = CpuMesh::default();

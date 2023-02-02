@@ -394,7 +394,7 @@ impl Renderer {
         &mut self,
         cx: &mut abs::Cx,
         world: &World,
-        delta: std::time::Duration,
+        _delta: std::time::Duration,
     ) -> anyhow::Result<()> {
         // Get the next frame to draw onto:
         //      We have a few in-flight frames so the GPU doesn't stay still (And we don't need to
@@ -407,7 +407,7 @@ impl Renderer {
         frame.deletion.drain(..).for_each(|f| f(cx));
 
         // Free all scratch memory, since it's only used for uploading to the GPU.
-        frame.allocator.free_scratch()?;
+        frame.allocator.free_scratch();
 
         // Wait for the frame render queue fence:
         //      We only have command buffer per frame so we need to wait for the previous one before
