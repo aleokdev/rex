@@ -38,10 +38,6 @@ impl Buffer<BuddyAllocation> {
         device: &ash::Device,
         memory: &mut GpuMemory,
     ) -> anyhow::Result<()> {
-        // FIXME: This causes an assertion check in the buddy allocator when destroying the renderer
-        // (assert_eq!(self.block(index - 1).order_free, 0); in deallocate)
-        // So we skip freeing and just destroy the buffer altogether
-
         memory.free_buffer(self.allocation)?;
         device.destroy_buffer(self.raw, None);
         Ok(())
