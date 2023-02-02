@@ -38,7 +38,7 @@ impl Buffer<BuddyAllocation> {
         device: &ash::Device,
         memory: &mut GpuMemory,
     ) -> anyhow::Result<()> {
-        memory.free_buffer(self.allocation)?;
+        memory.free(self.allocation)?;
         device.destroy_buffer(self.raw, None);
         Ok(())
     }

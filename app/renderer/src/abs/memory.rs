@@ -4,7 +4,7 @@ use super::{
 };
 use ash::extensions::ext::DebugUtils;
 use ash::vk::{self, Handle};
-use nonzero_ext::NonZeroAble;
+use nonzero_ext::{nonzero, NonZeroAble};
 use space_alloc::{
     linear::LinearAllocation, BuddyAllocation, BuddyAllocator, Deallocator, LinearAllocator,
     OutOfMemory,
@@ -12,8 +12,12 @@ use space_alloc::{
 use std::ffi::CStr;
 use std::{collections::HashMap, ffi::c_void, num::NonZeroU64};
 
-const DEVICE_BLOCK_SIZE: u64 = 256 * 1024 * 1024;
-const HOST_BLOCK_SIZE: u64 = 64 * 1024 * 1024;
+/// 256 MiB
+const DEVICE_BLOCK_SIZE: NonZeroU64 = nonzero!(256 * 1024 * 1024u64);
+/// 64 MiB
+const HOST_BLOCK_SIZE: NonZeroU64 = nonzero!(64 * 1024 * 1024u64);
+/// 1 KiB
+const MIN_ALLOC_SIZE: u64 = 1024u64;
 
 #[derive(Debug)]
 struct MemoryBlock<Allocator: space_alloc::Allocator> {
@@ -46,10 +50,12 @@ struct MemoryType<Allocator: space_alloc::Allocator> {
     memory_type_index: u32,
     block_size: NonZeroU64,
     min_alloc_size: u64,
+    /// Whether to map the blocks allocated in the memory type into application address space or not.
     mapped: bool,
 }
 
 struct MemoryTypeAllocation<Allocation: space_alloc::Allocation> {
+    /// The [vk::DeviceMemory] of the block this allocation was obtained from.
     block_memory: vk::DeviceMemory,
     mapped: *mut c_void,
     block_index: usize,
@@ -91,12 +97,20 @@ impl<Allocator: space_alloc::Allocator> MemoryType<Allocator> {
         size: NonZeroU64,
         alignment: NonZeroU64,
     ) -> anyhow::Result<MemoryTypeAllocation<Allocator::Allocation>> {
+        use space_alloc::Allocation;
+
+        assert!(
+            size <= self.block_size,
+            "[MemoryType]: tried to allocate space of {}B which cannot fit in [MemoryBlock]s of size {}B",
+            size,
+            self.block_size
+        );
+
         // We iterate through all our blocks until we find one that isn't out of memory, then
         // allocate there.
         for (i, block) in self.memory_blocks.iter_mut().enumerate() {
             match block.allocator.allocate(size, alignment) {
                 Ok(allocation) => {
-                    use space_alloc::Allocation;
                     return Ok(MemoryTypeAllocation {
                         block_memory: block.raw,
                         mapped: block.mapped.add(allocation.offset() as usize),
@@ -107,8 +121,28 @@ impl<Allocator: space_alloc::Allocator> MemoryType<Allocator> {
                 Err(OutOfMemory) => {}
             }
         }
+        // If we don't have blocks with free memory left, we allocate a new one and return an allocation from there.
         self.allocate_block(device)?;
-        self.allocate(device, size, alignment)
+        // SAFETY: We have successfully pushed a MemoryBlock in allocate_block. [self.memory_blocks] cannot be empty.
+        let block = self.memory_blocks.last_mut().unwrap_unchecked();
+        let allocation = block
+            .allocator
+            .allocate(size, alignment)
+            .unwrap_or_else(|_| {
+                panic!(
+                    "[MemoryType]: could not allocate on newly created memory block: \
+            there is most likely a bug in the space_alloc crate \
+            (alloc size: {}, alloc alignment: {}, block size: {})",
+                    size, alignment, self.block_size
+                )
+            });
+
+        Ok(MemoryTypeAllocation {
+            block_memory: block.raw,
+            mapped: block.mapped.add(allocation.offset() as usize),
+            allocation,
+            block_index: self.memory_blocks.len() - 1,
+        })
     }
 
     pub unsafe fn destroy(self, device: &ash::Device) {
@@ -178,31 +212,20 @@ impl GpuMemory {
         })
     }
 
-    pub unsafe fn free_scratch(&mut self) {
-        for memory_type in self.linear_linear.values_mut() {
-            for block in &mut memory_type.memory_blocks {
-                block.allocator.reset();
-            }
-        }
-
-        for buffer in self.scratch.drain(..) {
-            self.device.destroy_buffer(buffer, None);
-        }
-    }
-
     unsafe fn allocate_scratch(
         &mut self,
         usage: MemoryUsage,
         requirements: &vk::MemoryRequirements,
         mapped: bool,
     ) -> anyhow::Result<GpuAllocation<LinearAllocation>> {
-        let (memory_type_index, memory_props) = find_properties(
+        // Find the index & memory properties of a suitable memory type for this allocation.
+        let (memory_type_index, memory_props) = find_suitable_memory_type(
             &self.memory_props,
             requirements.memory_type_bits,
             usage.flags(false),
         )
         .or_else(|| {
-            find_properties(
+            find_suitable_memory_type(
                 &self.memory_props,
                 requirements.memory_type_bits,
                 usage.flags(true),
@@ -222,6 +245,7 @@ impl GpuMemory {
             DEVICE_BLOCK_SIZE
         };
 
+        // Obtain or create the memory type we are going to allocate into.
         let memory_type = self
             .linear_linear
             .entry(memory_type_index)
@@ -229,11 +253,12 @@ impl GpuMemory {
                 memory_blocks: vec![],
                 memory_props,
                 memory_type_index,
-                block_size: NonZeroU64::new(block_size).unwrap(),
-                min_alloc_size: requirements.alignment,
+                block_size,
+                min_alloc_size: MIN_ALLOC_SIZE,
                 mapped,
             });
 
+        // Return an allocation done in the suitable memory type we found.
         let allocation = memory_type.allocate(
             &self.device,
             NonZeroU64::new(requirements.size).unwrap(),
@@ -277,35 +302,19 @@ impl GpuMemory {
         })
     }
 
-    pub unsafe fn free_buffer(
-        &mut self,
-        allocation: GpuAllocation<BuddyAllocation>,
-    ) -> anyhow::Result<()> {
-        assert_eq!(allocation.allocator, AllocatorType::List);
-        self.list_linear
-            .get_mut(&allocation.memory_type_index)
-            .ok_or_else(|| anyhow::anyhow!("mismatched allocation memory type"))?
-            .memory_blocks
-            .get_mut(allocation.memory_block_index)
-            .ok_or_else(|| anyhow::anyhow!("out of range memory block index"))?
-            .allocator
-            .deallocate(&allocation.allocation);
-        Ok(())
-    }
-
     unsafe fn allocate_list(
         &mut self,
         usage: MemoryUsage,
         requirements: &vk::MemoryRequirements,
         mapped: bool,
     ) -> anyhow::Result<GpuAllocation<BuddyAllocation>> {
-        let (memory_type_index, memory_props) = find_properties(
+        let (memory_type_index, memory_props) = find_suitable_memory_type(
             &self.memory_props,
             requirements.memory_type_bits,
             usage.flags(false),
         )
         .or_else(|| {
-            find_properties(
+            find_suitable_memory_type(
                 &self.memory_props,
                 requirements.memory_type_bits,
                 usage.flags(true),
@@ -332,7 +341,7 @@ impl GpuMemory {
                 memory_blocks: vec![],
                 memory_props,
                 memory_type_index,
-                block_size: block_size.into_nonzero().unwrap(),
+                block_size: block_size,
                 min_alloc_size: requirements.alignment,
                 mapped,
             });
@@ -357,7 +366,7 @@ impl GpuMemory {
         let image = self.device.create_image(info, None)?;
         let requirements = self.device.get_image_memory_requirements(image);
 
-        let (memory_type_index, memory_props) = find_properties(
+        let (memory_type_index, memory_props) = find_suitable_memory_type(
             &self.memory_props,
             requirements.memory_type_bits,
             vk::MemoryPropertyFlags::DEVICE_LOCAL,
@@ -371,7 +380,7 @@ impl GpuMemory {
                 memory_blocks: vec![],
                 memory_props,
                 memory_type_index,
-                block_size: DEVICE_BLOCK_SIZE.into_nonzero().unwrap(),
+                block_size: DEVICE_BLOCK_SIZE,
                 min_alloc_size: requirements.alignment,
                 mapped: false,
             });
@@ -403,20 +412,41 @@ impl GpuMemory {
         })
     }
 
-    pub unsafe fn free_image(
+    pub unsafe fn free_scratch(&mut self) {
+        for memory_type in self.linear_linear.values_mut() {
+            for block in &mut memory_type.memory_blocks {
+                block.allocator.reset();
+            }
+        }
+
+        for buffer in self.scratch.drain(..) {
+            self.device.destroy_buffer(buffer, None);
+        }
+    }
+
+    pub unsafe fn free(
         &mut self,
         allocation: GpuAllocation<BuddyAllocation>,
     ) -> anyhow::Result<()> {
-        assert_eq!(allocation.allocator, AllocatorType::Image);
-        self.images
-            .get_mut(&allocation.memory_type_index)
-            .ok_or_else(|| anyhow::anyhow!("mismatched allocation memory type"))?
-            .memory_blocks
-            .get_mut(allocation.memory_block_index)
-            .ok_or_else(|| anyhow::anyhow!("out of range memory block index"))?
-            .allocator
-            .deallocate(&allocation.allocation);
-        Ok(())
+        fn free<Alloc: Deallocator>(
+            map: &mut HashMap<u32, MemoryType<Alloc>>,
+            allocation: GpuAllocation<Alloc::Allocation>,
+        ) -> anyhow::Result<()> {
+            map.get_mut(&allocation.memory_type_index)
+                .ok_or_else(|| anyhow::anyhow!("mismatched allocation memory type"))?
+                .memory_blocks
+                .get_mut(allocation.memory_block_index)
+                .ok_or_else(|| anyhow::anyhow!("out of range memory block index"))?
+                .allocator
+                .deallocate(&allocation.allocation);
+            Ok(())
+        }
+
+        match allocation.allocator {
+            AllocatorType::Linear => Ok(()), // We cannot free memory allocated on a linear allocator in a per-alloc basis
+            AllocatorType::List => free(&mut self.list_linear, allocation),
+            AllocatorType::Image => free(&mut self.images, allocation),
+        }
     }
 }
 
@@ -566,19 +596,21 @@ pub unsafe fn cmd_stage_sync(device: &ash::Device, cmd: vk::CommandBuffer) {
     );
 }
 
-fn find_properties(
+/// Searches through a [vk::PhysicalDeviceMemoryProperties] object to find a suitable memory type for the requirements
+/// specified through the `required_type_bits` & `required_props` parameters.
+///
+/// Returns the index of an appropiate memory type to use as well as its property flags.
+fn find_suitable_memory_type(
     memory_props: &vk::PhysicalDeviceMemoryProperties,
     required_type_bits: u32,
     required_props: vk::MemoryPropertyFlags,
 ) -> Option<(u32, vk::MemoryPropertyFlags)> {
-    for i in 0..memory_props.memory_type_count {
-        let type_bits = 1 << i;
+    (0..memory_props.memory_type_count).find_map(|memory_type_idx| {
+        let type_bits = 1 << memory_type_idx;
         let is_required_type = (required_type_bits & type_bits) != 0;
-        let props = memory_props.memory_types[i as usize].property_flags;
+        let props = memory_props.memory_types[memory_type_idx as usize].property_flags;
         let has_required_props = (props & required_props) == required_props;
-        if is_required_type && has_required_props {
-            return Some((i, props));
-        }
-    }
-    None
+
+        (is_required_type && has_required_props).then_some((memory_type_idx, props))
+    })
 }

@@ -17,7 +17,7 @@ impl Image {
         memory: &mut GpuMemory,
     ) -> anyhow::Result<()> {
         if let Some(allocation) = self.allocation {
-            memory.free_image(allocation)?;
+            memory.free(allocation)?;
         }
         device.destroy_image(self.raw, None);
         Ok(())
