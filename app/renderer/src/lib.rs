@@ -258,7 +258,7 @@ impl Renderer {
             .depth_bias_enable(false)
             .line_width(1.)
             .front_face(vk::FrontFace::CLOCKWISE)
-            .polygon_mode(vk::PolygonMode::FILL);
+            .polygon_mode(vk::PolygonMode::LINE);
 
         let msaa = vk::PipelineMultisampleStateCreateInfo::builder()
             .sample_shading_enable(false)
