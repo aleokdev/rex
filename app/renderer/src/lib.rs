@@ -304,6 +304,9 @@ impl Renderer {
             .max_depth_bounds(1.)
             .stencil_test_enable(false);
 
+        let dynamic_state = vk::PipelineDynamicStateCreateInfo::builder()
+            .dynamic_states(&[vk::DynamicState::VIEWPORT, vk::DynamicState::SCISSOR]);
+
         let pipeline_info = vk::GraphicsPipelineCreateInfo::builder()
             .stages(stages)
             .input_assembly_state(&input_assembly_state)
@@ -315,7 +318,8 @@ impl Renderer {
             .color_blend_state(&color_blend_state)
             .depth_stencil_state(&depth_stencil_state)
             .viewport_state(&viewport_state)
-            .vertex_input_state(&*vertex_input_state_raw);
+            .vertex_input_state(&*vertex_input_state_raw)
+            .dynamic_state(&dynamic_state);
 
         let pipeline = cx
             .device
@@ -447,6 +451,25 @@ impl Renderer {
             &ash::vk::CommandBufferBeginInfo::builder()
                 .flags(ash::vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT),
         )?;
+
+        // Update viewport and scissor
+        cx.device.cmd_set_viewport(
+            frame.cmd,
+            0,
+            &[*vk::Viewport::builder()
+                .width(cx.width as f32)
+                .height(cx.height as f32)
+                .min_depth(0.)
+                .max_depth(1.)],
+        );
+        cx.device.cmd_set_scissor(
+            frame.cmd,
+            0,
+            &[*vk::Rect2D::builder().extent(vk::Extent2D {
+                width: cx.width,
+                height: cx.height,
+            })],
+        );
 
         // Upload one mesh if available from the queue. We avoid uploading more than one per frame
         // so that we don't impact framerate, but that is a really hacky solution.
