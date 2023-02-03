@@ -207,6 +207,63 @@ pub fn generate_room_wall_mesh(room: &Room, mesh: &mut CpuMesh) {
                 }));
                 mesh.indices
                     .extend([i0, i0 + 2, i0 + 3, i0 + 3, i0 + 2, i0 + 1]);
+
+                // Doorframe sidings
+                let vs = if is_horizontal {
+                    [
+                        vec3(from_nw.x, from_nw.y, floor_height),
+                        vec3(from_nw.x, from_se.y, from_nw.z),
+                        from_nw,
+                        vec3(from_nw.x, from_se.y, floor_height),
+                    ]
+                } else {
+                    [
+                        vec3(from_nw.x, from_nw.y, floor_height),
+                        vec3(from_se.x, from_nw.y, from_nw.z),
+                        from_nw,
+                        vec3(from_se.x, from_nw.y, floor_height),
+                    ]
+                };
+                let i0 = mesh.vertices.len() as u32;
+                mesh.vertices.extend(vs.into_iter().map(|position| Vertex {
+                    position,
+                    normal: if is_horizontal {
+                        coords::EAST
+                    } else {
+                        coords::SOUTH
+                    },
+                    color: Vec3::ONE,
+                }));
+                mesh.indices
+                    .extend([i0, i0 + 2, i0 + 3, i0 + 3, i0 + 2, i0 + 1]);
+
+                let vs = if is_horizontal {
+                    [
+                        vec3(to_nw.x, to_nw.y, floor_height),
+                        vec3(to_nw.x, to_se.y, to_nw.z),
+                        to_nw,
+                        vec3(to_nw.x, to_se.y, floor_height),
+                    ]
+                } else {
+                    [
+                        vec3(to_nw.x, to_nw.y, floor_height),
+                        vec3(to_se.x, to_nw.y, to_nw.z),
+                        to_nw,
+                        vec3(to_se.x, to_nw.y, floor_height),
+                    ]
+                };
+                let i0 = mesh.vertices.len() as u32;
+                mesh.vertices.extend(vs.into_iter().map(|position| Vertex {
+                    position,
+                    normal: if is_horizontal {
+                        coords::WEST
+                    } else {
+                        coords::NORTH
+                    },
+                    color: Vec3::ONE,
+                }));
+                mesh.indices
+                    .extend([i0, i0 + 2, i0 + 3, i0 + 3, i0 + 2, i0 + 1]);
             }
             rex::building::DualPiece::Empty => continue,
         }
