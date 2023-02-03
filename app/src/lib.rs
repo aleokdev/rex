@@ -106,6 +106,11 @@ pub fn run(width: u32, height: u32) -> anyhow::Result<()> {
                         },
                     ..
                 } => match keycode {
+                    winit::event::VirtualKeyCode::Tab
+                        if state == winit::event::ElementState::Pressed =>
+                    {
+                        app.renderer.set_wireframe(!app.renderer.wireframe());
+                    }
                     winit::event::VirtualKeyCode::W => {
                         movement_keys_pressed[0] = state == winit::event::ElementState::Pressed
                     }

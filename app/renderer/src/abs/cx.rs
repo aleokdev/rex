@@ -178,7 +178,10 @@ impl Cx {
         let queue = queue.ok_or_else(|| anyhow::anyhow!("no graphics queue"))? as u32;
 
         let raw_device_extensions = [Swapchain::name().as_ptr()];
-        let features = vk::PhysicalDeviceFeatures::default();
+        let features = vk::PhysicalDeviceFeatures {
+            fill_mode_non_solid: vk::TRUE,
+            ..Default::default()
+        };
 
         let device = instance.create_device(
             physical_device,
