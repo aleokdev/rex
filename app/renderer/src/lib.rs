@@ -15,7 +15,7 @@ use abs::{
 use ash::vk::{self};
 use common::World;
 use nonzero_ext::{nonzero, NonZeroAble};
-use space_alloc::{BuddyAllocation, BuddyAllocator};
+use space_alloc::{BuddyAllocation, BuddyAllocator, OutOfMemory};
 
 /// Represents an in-flight render frame.
 pub struct Frame {
@@ -406,8 +406,22 @@ impl Renderer {
         // HACK: Measure frametime instead and upload as much as possible without sacrificing
         // framerate, or even better, use a different upload queue for the job.
         if let Some(mesh) = self.meshes_to_upload.pop_front() {
-            let gpu_mesh = Self::setup_mesh(cx, &mut self.arenas, &mut frame, &mesh)?;
-            self.meshes.push(gpu_mesh);
+            match Self::setup_mesh(cx, &mut self.arenas, &mut frame, &mesh) {
+                Ok(gpu_mesh) => {
+                    self.meshes.push(gpu_mesh);
+                }
+                Err(err) => {
+                    if err.downcast_ref::<OutOfMemory>().is_some() {
+                        log::error!(
+                            "Could not upload mesh: Out of memory:\nVertex\n{}\n\nIndex\n{}",
+                            self.arenas.vertex.info_string(),
+                            self.arenas.index.info_string()
+                        );
+                    } else {
+                        return Err(err);
+                    }
+                }
+            }
         }
 
         // Upload the uniforms for this frame.
@@ -757,7 +771,7 @@ impl Arenas {
         Arenas {
             vertex: abs::buffer::BufferArena::new(
                 vk::BufferCreateInfo::builder()
-                    .size(64 * 1024 * std::mem::size_of::<abs::mesh::GpuVertex>() as u64)
+                    .size(256 * 1024 * std::mem::size_of::<abs::mesh::GpuVertex>() as u64)
                     .usage(vk::BufferUsageFlags::TRANSFER_DST | vk::BufferUsageFlags::VERTEX_BUFFER)
                     .sharing_mode(vk::SharingMode::EXCLUSIVE)
                     .build(),
@@ -769,7 +783,7 @@ impl Arenas {
             ),
             index: abs::buffer::BufferArena::new(
                 vk::BufferCreateInfo::builder()
-                    .size(512 * 1024 * std::mem::size_of::<GpuIndex>() as u64)
+                    .size(2 * 1024 * 1024 * std::mem::size_of::<GpuIndex>() as u64)
                     .usage(vk::BufferUsageFlags::TRANSFER_DST | vk::BufferUsageFlags::INDEX_BUFFER)
                     .sharing_mode(vk::SharingMode::EXCLUSIVE)
                     .build(),

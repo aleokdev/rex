@@ -5,7 +5,7 @@ use super::memory::{GpuAllocation, GpuMemory, MemoryUsage};
 use ash::extensions::ext::DebugUtils;
 use ash::vk::{self, Handle};
 use nonzero_ext::NonZeroAble;
-use space_alloc::{BuddyAllocation, BuddyAllocator};
+use space_alloc::{BuddyAllocation, BuddyAllocator, OutOfMemory};
 
 #[derive(Debug, Clone)]
 pub struct Buffer<Allocation: space_alloc::Allocation> {
@@ -74,6 +74,15 @@ impl BufferArena<BuddyAllocator> {
         }
     }
 
+    pub fn info_string(&self) -> String {
+        let mut str = String::new();
+        self.buffers
+            .iter()
+            .for_each(|(_, allocator)| str = format!("{}\n{:?}", str, allocator));
+
+        str
+    }
+
     pub unsafe fn suballocate(
         &mut self,
         memory: &mut GpuMemory,
@@ -98,9 +107,7 @@ impl BufferArena<BuddyAllocator> {
                         size: allocation.size(),
                     })
                 }
-                Err(e) => {
-                    return Err(e.into());
-                }
+                Err(OutOfMemory) => (),
             }
         }
 
