@@ -7,13 +7,13 @@ layout(location = 2) in vec3 inColor;
 layout(location = 0) out vec3 outColor;
 layout(location = 1) out vec3 outNormal;
 layout(location = 2) out vec3 outPos;
-layout(location = 3) out vec3 outCameraPos;
 
 layout(set = 0, binding = 0) uniform WorldUniforms {
 	mat4 proj;
 	mat4 view;
 
 	vec4 camera_pos;
+	vec4 camera_dir;
 };
 
 layout(set = 1, binding = 0) uniform ModelUniforms {
@@ -23,10 +23,10 @@ layout(set = 1, binding = 0) uniform ModelUniforms {
 void main()
 {
 	vec4 pos = vec4(inPosition, 1);
-	pos = proj * view * model * pos;
+	vec4 world_pos = model * pos;
+	pos = proj * view * world_pos;
 	outNormal = mat3(transpose(inverse(model))) * inNormal;
 	outColor = inColor;
-	outPos = pos.xyz;
-	outCameraPos = camera_pos.xyz;
+	outPos = world_pos.xyz;
 	gl_Position = pos;
 }
