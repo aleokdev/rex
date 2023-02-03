@@ -14,7 +14,6 @@ use abs::{
 };
 use ash::vk::{self};
 use common::World;
-use glam::Vec4;
 use nonzero_ext::{nonzero, NonZeroAble};
 use space_alloc::{BuddyAllocation, BuddyAllocator};
 
@@ -210,7 +209,7 @@ impl Renderer {
                         .range(std::mem::size_of::<WorldUniform>() as u64)
                         .build()],
                     vk::DescriptorType::UNIFORM_BUFFER,
-                    vk::ShaderStageFlags::VERTEX,
+                    vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
                 )
                 .build(cx, &mut ds_allocator, &mut ds_layout_cache)?;
 
@@ -484,7 +483,8 @@ impl Renderer {
         let world_uniform = WorldUniform {
             proj: world.camera.proj(),
             view: world.camera.view(),
-            camera_pos: Vec4::from((world.camera.position(), 0.)),
+            camera_pos: world.camera.position().extend(0.),
+            camera_dir: world.camera.forward().extend(0.),
         };
 
         // Rotate at 1 sec / turn
