@@ -78,8 +78,11 @@ pub struct Renderer {
 
     pub vertex_shader: vk::ShaderModule,
     pub fragment_shader: vk::ShaderModule,
-    pub pipeline: vk::Pipeline,
+    pub wireframe_pipeline: vk::Pipeline,
+    pub fill_pipeline: vk::Pipeline,
     pub pipeline_layout: vk::PipelineLayout,
+
+    wireframe: bool,
 
     pub pass: vk::RenderPass,
     pub framebuffers: Vec<vk::Framebuffer>,
@@ -246,84 +249,9 @@ impl Renderer {
                 .name(ENTRY_POINT)
                 .build(),
         ];
-        let input_assembly_state = vk::PipelineInputAssemblyStateCreateInfo::builder()
-            .topology(vk::PrimitiveTopology::TRIANGLE_LIST)
-            .primitive_restart_enable(false);
 
-        let rasterization_state = vk::PipelineRasterizationStateCreateInfo::builder()
-            .cull_mode(vk::CullModeFlags::NONE)
-            .depth_bias_clamp(0.)
-            .depth_bias_constant_factor(0.)
-            .depth_bias_slope_factor(0.)
-            .depth_bias_enable(false)
-            .line_width(1.)
-            .front_face(vk::FrontFace::CLOCKWISE)
-            .polygon_mode(vk::PolygonMode::LINE);
-
-        let msaa = vk::PipelineMultisampleStateCreateInfo::builder()
-            .sample_shading_enable(false)
-            .alpha_to_coverage_enable(false)
-            .alpha_to_one_enable(false)
-            .min_sample_shading(1.)
-            .rasterization_samples(vk::SampleCountFlags::TYPE_1);
-
-        let color_blend_attachments = &[*vk::PipelineColorBlendAttachmentState::builder()
-            .color_write_mask(vk::ColorComponentFlags::RGBA)
-            .blend_enable(false)];
-
-        let color_blend_state = vk::PipelineColorBlendStateCreateInfo::builder()
-            .logic_op_enable(false)
-            .logic_op(vk::LogicOp::COPY)
-            .attachments(color_blend_attachments);
-
-        let viewports = &[*vk::Viewport::builder()
-            .width(cx.width as f32)
-            .height(cx.height as f32)
-            .min_depth(0.)
-            .max_depth(1.)];
-
-        let scissors = &[*vk::Rect2D::builder().extent(vk::Extent2D {
-            width: cx.width,
-            height: cx.height,
-        })];
-
-        let viewport_state = vk::PipelineViewportStateCreateInfo::builder()
-            .viewports(viewports)
-            .scissors(scissors);
-
-        let vertex_input_state = GpuVertex::description();
-        let vertex_input_state_raw = vertex_input_state.raw();
-
-        let depth_stencil_state = vk::PipelineDepthStencilStateCreateInfo::builder()
-            .depth_test_enable(true)
-            .depth_write_enable(true)
-            .depth_compare_op(vk::CompareOp::LESS_OR_EQUAL)
-            .depth_bounds_test_enable(false)
-            .min_depth_bounds(0.)
-            .max_depth_bounds(1.)
-            .stencil_test_enable(false);
-
-        let dynamic_state = vk::PipelineDynamicStateCreateInfo::builder()
-            .dynamic_states(&[vk::DynamicState::VIEWPORT, vk::DynamicState::SCISSOR]);
-
-        let pipeline_info = vk::GraphicsPipelineCreateInfo::builder()
-            .stages(stages)
-            .input_assembly_state(&input_assembly_state)
-            .rasterization_state(&rasterization_state)
-            .multisample_state(&msaa)
-            .render_pass(pass)
-            .subpass(0)
-            .layout(pipeline_layout)
-            .color_blend_state(&color_blend_state)
-            .depth_stencil_state(&depth_stencil_state)
-            .viewport_state(&viewport_state)
-            .vertex_input_state(&*vertex_input_state_raw)
-            .dynamic_state(&dynamic_state);
-
-        let pipeline = cx
-            .device
-            .create_graphics_pipelines(vk::PipelineCache::null(), &[*pipeline_info], None)
-            .map_err(|(_, e)| e)?[0];
+        let wireframe_pipeline = create_pipeline(cx, stages, pass, pipeline_layout, true)?;
+        let fill_pipeline = create_pipeline(cx, stages, pass, pipeline_layout, false)?;
 
         Ok(Renderer {
             ds_allocator,
@@ -333,8 +261,11 @@ impl Renderer {
 
             vertex_shader,
             fragment_shader,
-            pipeline,
+            wireframe_pipeline,
+            fill_pipeline,
             pipeline_layout,
+
+            wireframe: false,
 
             pass,
             framebuffers,
@@ -559,7 +490,11 @@ impl Renderer {
         cx.device.cmd_bind_pipeline(
             frame.cmd,
             ash::vk::PipelineBindPoint::GRAPHICS,
-            self.pipeline,
+            if self.wireframe {
+                self.wireframe_pipeline
+            } else {
+                self.fill_pipeline
+            },
         );
 
         // Bind the camera & model uniform descriptor sets and cube vertex/index buffers.
@@ -709,7 +644,8 @@ impl Renderer {
         drop(self.ds_allocator);
         cx.device
             .destroy_pipeline_layout(self.pipeline_layout, None);
-        cx.device.destroy_pipeline(self.pipeline, None);
+        cx.device.destroy_pipeline(self.wireframe_pipeline, None);
+        cx.device.destroy_pipeline(self.fill_pipeline, None);
         cx.device.destroy_shader_module(self.vertex_shader, None);
         cx.device.destroy_shader_module(self.fragment_shader, None);
         cx.device.destroy_render_pass(self.pass, None);
@@ -719,6 +655,94 @@ impl Renderer {
 
         Ok(())
     }
+
+    pub fn set_wireframe(&mut self, wireframe: bool) {
+        self.wireframe = wireframe;
+    }
+
+    pub fn wireframe(&self) -> bool {
+        self.wireframe
+    }
+}
+
+unsafe fn create_pipeline(
+    cx: &mut abs::Cx,
+    shader_stages: &[vk::PipelineShaderStageCreateInfo; 2],
+    pass: vk::RenderPass,
+    pipeline_layout: vk::PipelineLayout,
+    wireframe: bool,
+) -> Result<vk::Pipeline, anyhow::Error> {
+    let input_assembly_state = vk::PipelineInputAssemblyStateCreateInfo::builder()
+        .topology(vk::PrimitiveTopology::TRIANGLE_LIST)
+        .primitive_restart_enable(false);
+    let rasterization_state = vk::PipelineRasterizationStateCreateInfo::builder()
+        .cull_mode(vk::CullModeFlags::NONE)
+        .depth_bias_clamp(0.)
+        .depth_bias_constant_factor(0.)
+        .depth_bias_slope_factor(0.)
+        .depth_bias_enable(false)
+        .line_width(1.)
+        .front_face(vk::FrontFace::CLOCKWISE)
+        .polygon_mode(if wireframe {
+            vk::PolygonMode::LINE
+        } else {
+            vk::PolygonMode::FILL
+        });
+    let msaa = vk::PipelineMultisampleStateCreateInfo::builder()
+        .sample_shading_enable(false)
+        .alpha_to_coverage_enable(false)
+        .alpha_to_one_enable(false)
+        .min_sample_shading(1.)
+        .rasterization_samples(vk::SampleCountFlags::TYPE_1);
+    let color_blend_attachments = &[*vk::PipelineColorBlendAttachmentState::builder()
+        .color_write_mask(vk::ColorComponentFlags::RGBA)
+        .blend_enable(false)];
+    let color_blend_state = vk::PipelineColorBlendStateCreateInfo::builder()
+        .logic_op_enable(false)
+        .logic_op(vk::LogicOp::COPY)
+        .attachments(color_blend_attachments);
+    let viewports = &[*vk::Viewport::builder()
+        .width(cx.width as f32)
+        .height(cx.height as f32)
+        .min_depth(0.)
+        .max_depth(1.)];
+    let scissors = &[*vk::Rect2D::builder().extent(vk::Extent2D {
+        width: cx.width,
+        height: cx.height,
+    })];
+    let viewport_state = vk::PipelineViewportStateCreateInfo::builder()
+        .viewports(viewports)
+        .scissors(scissors);
+    let vertex_input_state = GpuVertex::description();
+    let vertex_input_state_raw = vertex_input_state.raw();
+    let depth_stencil_state = vk::PipelineDepthStencilStateCreateInfo::builder()
+        .depth_test_enable(true)
+        .depth_write_enable(true)
+        .depth_compare_op(vk::CompareOp::LESS_OR_EQUAL)
+        .depth_bounds_test_enable(false)
+        .min_depth_bounds(0.)
+        .max_depth_bounds(1.)
+        .stencil_test_enable(false);
+    let dynamic_state = vk::PipelineDynamicStateCreateInfo::builder()
+        .dynamic_states(&[vk::DynamicState::VIEWPORT, vk::DynamicState::SCISSOR]);
+    let pipeline_info = vk::GraphicsPipelineCreateInfo::builder()
+        .stages(shader_stages)
+        .input_assembly_state(&input_assembly_state)
+        .rasterization_state(&rasterization_state)
+        .multisample_state(&msaa)
+        .render_pass(pass)
+        .subpass(0)
+        .layout(pipeline_layout)
+        .color_blend_state(&color_blend_state)
+        .depth_stencil_state(&depth_stencil_state)
+        .viewport_state(&viewport_state)
+        .vertex_input_state(&*vertex_input_state_raw)
+        .dynamic_state(&dynamic_state);
+    let pipeline = cx
+        .device
+        .create_graphics_pipelines(vk::PipelineCache::null(), &[*pipeline_info], None)
+        .map_err(|(_, e)| e)?[0];
+    Ok(pipeline)
 }
 
 pub struct Arenas {
