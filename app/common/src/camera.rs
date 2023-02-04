@@ -24,14 +24,14 @@ impl Camera {
     /// A matrix that negates the Y axis (i.e. If up was previously -Y, by doing NEGATE_Y_MATRIX * PV we'll obtain up = +Y).
     const NEGATE_Y_MATRIX: Mat4 = Mat4::from_cols(Vec4::X, Vec4::NEG_Y, Vec4::Z, Vec4::W);
 
-    pub fn new(aspect_ratio: f32) -> Self {
+    pub fn new(position: Vec3, aspect_ratio: f32) -> Self {
         Camera {
             near: 0.1,
             far: 300.,
             aspect: aspect_ratio,
             fovy: 60.0f32.to_radians(),
 
-            position: glam::Vec3::ZERO,
+            position,
             up: coords::UP,
             forward: coords::NORTH,
 

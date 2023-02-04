@@ -10,6 +10,7 @@ use rex::{
 pub const DOOR_HEIGHT: f32 = 2.1;
 pub const CEILING_HEIGHT: f32 = 3.4;
 pub const LEVEL_HEIGHT: f32 = 3.5;
+pub const WALL_HALF_WIDTH: f32 = 0.1;
 
 pub fn generate_room_mesh(db: &Database, id: RoomId) -> CpuMesh {
     let mut mesh = CpuMesh::default();
@@ -67,7 +68,6 @@ pub struct Wall;
 
 pub fn generate_room_wall_mesh(room: &Room, mesh: &mut CpuMesh) {
     for (dual_pos, piece) in room.duals.iter() {
-        const WALL_WIDTH: f32 = 0.1;
         let is_horizontal = (dual_pos.x + dual_pos.y) % 2 == 0;
         let corrected_dual_pos = if is_horizontal {
             dual_pos.truncate()
@@ -96,18 +96,18 @@ pub fn generate_room_wall_mesh(room: &Room, mesh: &mut CpuMesh) {
 
             if normal == DualNormalDirection::NorthWest {
                 if is_horizontal {
-                    from = vec3(x, y - WALL_WIDTH, pos.z);
+                    from = vec3(x, y - WALL_HALF_WIDTH, pos.z);
                     normal_vec = common::coords::NORTH;
                 } else {
-                    from = vec3(x - WALL_WIDTH, y, pos.z);
+                    from = vec3(x - WALL_HALF_WIDTH, y, pos.z);
                     normal_vec = common::coords::WEST;
                 };
             } else {
                 if is_horizontal {
-                    from = vec3(x, y + WALL_WIDTH, pos.z);
+                    from = vec3(x, y + WALL_HALF_WIDTH, pos.z);
                     normal_vec = common::coords::SOUTH;
                 } else {
-                    from = vec3(x + WALL_WIDTH, y, pos.z);
+                    from = vec3(x + WALL_HALF_WIDTH, y, pos.z);
                     normal_vec = common::coords::EAST;
                 };
             }
@@ -122,34 +122,34 @@ pub fn generate_room_wall_mesh(room: &Room, mesh: &mut CpuMesh) {
             match (normal, is_horizontal) {
                 (DualNormalDirection::SouthEast, true) => {
                     if corners[0] {
-                        from += coords::WEST * WALL_WIDTH;
+                        from += coords::WEST * WALL_HALF_WIDTH;
                     }
                     if corners[1] {
-                        to += coords::EAST * WALL_WIDTH;
+                        to += coords::EAST * WALL_HALF_WIDTH;
                     }
                 }
                 (DualNormalDirection::SouthEast, false) => {
                     if corners[0] {
-                        to += coords::SOUTH * WALL_WIDTH;
+                        to += coords::SOUTH * WALL_HALF_WIDTH;
                     }
                     if corners[1] {
-                        from += coords::NORTH * WALL_WIDTH;
+                        from += coords::NORTH * WALL_HALF_WIDTH;
                     }
                 }
                 (DualNormalDirection::NorthWest, true) => {
                     if corners[0] {
-                        to += coords::EAST * WALL_WIDTH;
+                        to += coords::EAST * WALL_HALF_WIDTH;
                     }
                     if corners[1] {
-                        from += coords::WEST * WALL_WIDTH;
+                        from += coords::WEST * WALL_HALF_WIDTH;
                     }
                 }
                 (DualNormalDirection::NorthWest, false) => {
                     if corners[0] {
-                        from += coords::NORTH * WALL_WIDTH;
+                        from += coords::NORTH * WALL_HALF_WIDTH;
                     }
                     if corners[1] {
-                        to += coords::SOUTH * WALL_WIDTH;
+                        to += coords::SOUTH * WALL_HALF_WIDTH;
                     }
                 }
             }
@@ -203,15 +203,15 @@ pub fn generate_room_wall_mesh(room: &Room, mesh: &mut CpuMesh) {
                 let from_nw;
                 let floor_height = dual_pos.z as f32 * LEVEL_HEIGHT;
                 if is_horizontal {
-                    from_se =
-                        vec3(x, y + WALL_WIDTH, floor_height) + common::coords::UP * DOOR_HEIGHT;
-                    from_nw =
-                        vec3(x, y - WALL_WIDTH, floor_height) + common::coords::UP * DOOR_HEIGHT;
+                    from_se = vec3(x, y + WALL_HALF_WIDTH, floor_height)
+                        + common::coords::UP * DOOR_HEIGHT;
+                    from_nw = vec3(x, y - WALL_HALF_WIDTH, floor_height)
+                        + common::coords::UP * DOOR_HEIGHT;
                 } else {
-                    from_se =
-                        vec3(x + WALL_WIDTH, y, floor_height) + common::coords::UP * DOOR_HEIGHT;
-                    from_nw =
-                        vec3(x - WALL_WIDTH, y, floor_height) + common::coords::UP * DOOR_HEIGHT;
+                    from_se = vec3(x + WALL_HALF_WIDTH, y, floor_height)
+                        + common::coords::UP * DOOR_HEIGHT;
+                    from_nw = vec3(x - WALL_HALF_WIDTH, y, floor_height)
+                        + common::coords::UP * DOOR_HEIGHT;
                 };
 
                 let to_se = from_se

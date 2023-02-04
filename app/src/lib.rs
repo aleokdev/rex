@@ -1,3 +1,4 @@
+mod collision;
 mod meshgen;
 
 use std::{
@@ -6,9 +7,9 @@ use std::{
 };
 
 use common::{Camera, World};
-use glam::{ivec3, Vec3};
+use glam::{ivec3, vec3, Vec2, Vec3};
 use renderer::abs::mesh::{self, CpuMesh};
-use rex::grid::RoomId;
+use rex::{grid::RoomId, Database};
 use winit::{
     dpi::{PhysicalPosition, PhysicalSize},
     event::{ElementState, Event, KeyboardInput, WindowEvent},
@@ -34,7 +35,7 @@ impl App {
         ))?;
         let mut renderer = renderer::Renderer::new(&mut cx)?;
         let world = World {
-            camera: Camera::new(cx.width as f32 / cx.height as f32),
+            camera: Camera::new(vec3(0., 0., 1.68), cx.width as f32 / cx.height as f32),
         };
 
         let models = tobj::load_obj(
@@ -241,9 +242,15 @@ pub fn run(width: u32, height: u32) -> anyhow::Result<()> {
                 if sprint_key_pressed {
                     movement *= 10.;
                 }
-                app.world
-                    .camera
-                    .move_local_coords(movement * SPEED * delta_s);
+                let movement = movement * SPEED * delta_s;
+                let target_displacement =
+                    app.world.camera.forward().truncate().extend(0.).normalize() * movement.z
+                        + app.world.camera.up() * movement.y
+                        + app.world.camera.right().truncate().extend(0.).normalize() * movement.x;
+                let starting_pos = app.world.camera.position();
+
+                let current_pos = move_and_slide(&app.database, starting_pos, target_displacement);
+                app.world.camera.set_position(current_pos);
                 app.redraw(delta).unwrap();
 
                 last_time = now_time;
@@ -255,4 +262,95 @@ pub fn run(width: u32, height: u32) -> anyhow::Result<()> {
             _ => {}
         }
     })
+}
+
+fn move_and_slide(database: &Database, starting_pos: Vec3, mut to_move: Vec3) -> Vec3 {
+    fn calculate_delta_step(delta: Vec3) -> Vec3 {
+        const MAX_STEP_LENGTH: f32 = 0.1;
+        let delta_len = delta.length();
+        if delta_len <= MAX_STEP_LENGTH {
+            delta
+        } else {
+            delta / delta.length() * MAX_STEP_LENGTH
+        }
+    }
+    let mut step = calculate_delta_step(to_move);
+
+    let mut player_collider = collision::Sphere {
+        center: starting_pos,
+        radius: 0.3,
+    };
+
+    while to_move.length() >= step.length() {
+        let before_pos = player_collider.center;
+        let target_pos = before_pos + step;
+        to_move -= step;
+
+        player_collider.center = target_pos;
+
+        if collides_with_world(database, &player_collider) {
+            // We've hit something, let's decompose our movement into X and Y axis to find what the
+            // issue is
+
+            player_collider.center.x = before_pos.x;
+            if !collides_with_world(database, &player_collider) {
+                // X was the problem
+
+                to_move.x = 0.;
+            } else {
+                player_collider.center.x = target_pos.x;
+                player_collider.center.y = before_pos.y;
+                if !collides_with_world(database, &player_collider) {
+                    // Y was the problem
+
+                    to_move.y = 0.;
+                } else {
+                    // Both axes are the problem
+                    player_collider.center = before_pos;
+                    break;
+                }
+            }
+            // TODO: Z collision checks as well
+        }
+
+        if to_move == Vec3::ZERO {
+            break;
+        } else {
+            step = calculate_delta_step(to_move);
+        }
+    }
+
+    player_collider.center
+}
+
+fn collides_with_world(database: &Database, collider: &collision::Sphere) -> bool {
+    let cell_pos = ivec3(
+        collider.center.x.floor() as i32,
+        collider.center.y.floor() as i32,
+        (collider.center.z / CEILING_HEIGHT).floor() as i32,
+    );
+
+    if let Some(room_id) = database
+        .map
+        .floor(cell_pos.z)
+        .and_then(|floor| floor.cell(cell_pos.truncate()))
+    {
+        let room = &database.rooms[room_id];
+        let duals = &room.duals;
+        for (&dual_pos, piece) in duals.iter() {
+            match piece {
+                rex::building::DualPiece::Wall { .. } => {
+                    if collider.intersects(collision::wall_collision_rect(dual_pos)) {
+                        return true;
+                    }
+                }
+                _ => (),
+            }
+        }
+
+        false
+    } else {
+        // Everything outside the world counts as invisible block for now
+        true
+    }
 }
