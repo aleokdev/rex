@@ -61,11 +61,17 @@ impl Camera {
     }
 
     pub fn move_local_coords(&mut self, offset: Vec3) {
-        self.position += self.forward * offset.z + self.up * offset.y + self.right() * offset.x;
+        self.position += self.forward.truncate().extend(0.).normalize() * offset.z
+            + self.up * offset.y
+            + self.right().truncate().extend(0.).normalize() * offset.x;
     }
 
     pub fn position(&self) -> Vec3 {
         self.position
+    }
+
+    pub fn set_position(&mut self, position: glam::Vec3) {
+        self.position = position;
     }
 
     pub fn right(&self) -> Vec3 {
