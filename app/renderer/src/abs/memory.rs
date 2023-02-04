@@ -101,9 +101,11 @@ impl<Allocator: space_alloc::Allocator> MemoryType<Allocator> {
 
         assert!(
             size <= self.block_size,
-            "[MemoryType]: tried to allocate space of {}B which cannot fit in [MemoryBlock]s of size {}B",
+            "[MemoryType]: tried to allocate space of {}B ({}MiB) which cannot fit in [MemoryBlock]s of size {}B ({}MiB)",
             size,
-            self.block_size
+            size.get() / 1024 / 1024,
+            self.block_size,
+            self.block_size.get() / 1024 / 1024,
         );
 
         // We iterate through all our blocks until we find one that isn't out of memory, then
