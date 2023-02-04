@@ -86,6 +86,36 @@ pub fn run(width: u32, height: u32) -> anyhow::Result<()> {
         let delta_s = delta.as_secs_f32();
         const SPEED: f32 = 100.;
 
+        let player_pos = app.world.camera.position();
+        let player_pos = ivec3(
+            player_pos.x.floor() as i32,
+            player_pos.y.floor() as i32,
+            (player_pos.z / CEILING_HEIGHT).floor() as i32,
+        );
+        if let Some(id) = app
+            .database
+            .map
+            .floor(player_pos.z)
+            .and_then(|floor| floor.cell(player_pos.truncate()))
+        {
+            let current_room = &app.database.rooms[id];
+            let current_node = &app.database.nodes[current_room.node()];
+            // Load two children into the node tree
+            let nodes_to_load = current_node.children.iter().copied().flat_map(|node_idx| {
+                std::iter::once(node_idx)
+                    .chain(app.database.nodes[node_idx].children.iter().copied())
+            });
+            let rooms_to_load = nodes_to_load
+                .flat_map(|node| app.database.nodes[node].rooms.iter())
+                .filter(|room| !app.room_meshes_uploaded.contains(&room))
+                .collect::<Vec<_>>();
+            for &room_id in rooms_to_load {
+                app.renderer
+                    .upload_mesh(meshgen::generate_room_mesh(&app.database, room_id));
+                app.room_meshes_uploaded.insert(room_id);
+            }
+        }
+
         match event {
             Event::WindowEvent { event, .. } => match event {
                 WindowEvent::Resized(new_size) => unsafe {
