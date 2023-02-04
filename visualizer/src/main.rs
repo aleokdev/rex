@@ -153,17 +153,19 @@ fn build_room_mesh_walls(builder: &mut graphics::MeshBuilder, room: &Room) -> an
         let mut y = cell_pos.y as f32;
         let color;
         match piece {
-            rex::building::DualPiece::Wall { normal }
-            | rex::building::DualPiece::Door { normal } => {
+            rex::building::DualPiece::Wall { normal, .. } => {
                 if *normal == DualNormalDirection::NorthWest {
                     x -= WALL_WIDTH;
                     y -= WALL_WIDTH;
                 }
-                color = if matches!(piece, rex::building::DualPiece::Wall { .. }) {
-                    graphics::Color::MAGENTA
-                } else {
-                    graphics::Color::BLACK
-                };
+                color = graphics::Color::MAGENTA;
+            }
+            rex::building::DualPiece::Door { normal } => {
+                if *normal == DualNormalDirection::NorthWest {
+                    x -= WALL_WIDTH;
+                    y -= WALL_WIDTH;
+                }
+                color = graphics::Color::BLACK;
             }
             rex::building::DualPiece::Empty => continue,
         }

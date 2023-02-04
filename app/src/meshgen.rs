@@ -2,7 +2,7 @@ use common::coords;
 use glam::{ivec2, vec3, IVec2, Vec3};
 use renderer::abs::mesh::{CpuMesh, Vertex};
 use rex::{
-    building::{DualNormalDirection, Room},
+    building::{BuildingMap, DualNormalDirection, Room},
     grid::RoomId,
     Database,
 };
@@ -78,71 +78,140 @@ pub fn generate_room_wall_mesh(room: &Room, mesh: &mut CpuMesh) {
             (corrected_dual_pos.x - corrected_dual_pos.y) / 2,
             (corrected_dual_pos.x + corrected_dual_pos.y) / 2,
         );
+        let piece_pos = cell_pos.as_vec2().extend(dual_pos.z as f32 * LEVEL_HEIGHT);
         let x = cell_pos.x as f32;
         let y = cell_pos.y as f32;
-        match piece {
-            rex::building::DualPiece::Wall { normal } => {
-                let normal_vec;
-                let from;
 
-                if *normal == DualNormalDirection::NorthWest {
-                    if is_horizontal {
-                        from = vec3(x, y - WALL_WIDTH, dual_pos.z as f32 * LEVEL_HEIGHT);
-                        normal_vec = common::coords::NORTH;
-                    } else {
-                        from = vec3(x - WALL_WIDTH, y, dual_pos.z as f32 * LEVEL_HEIGHT);
-                        normal_vec = common::coords::WEST;
-                    };
+        fn wall_segment(
+            mesh: &mut CpuMesh,
+            pos: Vec3,
+            height: f32,
+            is_horizontal: bool,
+            corners: [bool; 2],
+            normal: DualNormalDirection,
+        ) {
+            let normal_vec;
+            let mut from;
+            let (x, y) = (pos.x, pos.y);
+
+            if normal == DualNormalDirection::NorthWest {
+                if is_horizontal {
+                    from = vec3(x, y - WALL_WIDTH, pos.z);
+                    normal_vec = common::coords::NORTH;
                 } else {
-                    if is_horizontal {
-                        from = vec3(x, y + WALL_WIDTH, dual_pos.z as f32 * LEVEL_HEIGHT);
-                        normal_vec = common::coords::SOUTH;
-                    } else {
-                        from = vec3(x + WALL_WIDTH, y, dual_pos.z as f32 * LEVEL_HEIGHT);
-                        normal_vec = common::coords::EAST;
-                    };
+                    from = vec3(x - WALL_WIDTH, y, pos.z);
+                    normal_vec = common::coords::WEST;
+                };
+            } else {
+                if is_horizontal {
+                    from = vec3(x, y + WALL_WIDTH, pos.z);
+                    normal_vec = common::coords::SOUTH;
+                } else {
+                    from = vec3(x + WALL_WIDTH, y, pos.z);
+                    normal_vec = common::coords::EAST;
+                };
+            }
+
+            let mut to =
+                from + if is_horizontal {
+                    common::coords::EAST
+                } else {
+                    common::coords::SOUTH
+                } + height * coords::UP;
+
+            match (normal, is_horizontal) {
+                (DualNormalDirection::SouthEast, true) => {
+                    if corners[0] {
+                        from += coords::WEST * WALL_WIDTH;
+                    }
+                    if corners[1] {
+                        to += coords::EAST * WALL_WIDTH;
+                    }
                 }
+                (DualNormalDirection::SouthEast, false) => {
+                    if corners[0] {
+                        to += coords::SOUTH * WALL_WIDTH;
+                    }
+                    if corners[1] {
+                        from += coords::NORTH * WALL_WIDTH;
+                    }
+                }
+                (DualNormalDirection::NorthWest, true) => {
+                    if corners[0] {
+                        to += coords::EAST * WALL_WIDTH;
+                    }
+                    if corners[1] {
+                        from += coords::WEST * WALL_WIDTH;
+                    }
+                }
+                (DualNormalDirection::NorthWest, false) => {
+                    if corners[0] {
+                        from += coords::NORTH * WALL_WIDTH;
+                    }
+                    if corners[1] {
+                        to += coords::SOUTH * WALL_WIDTH;
+                    }
+                }
+            }
 
-                let to =
-                    from + if is_horizontal {
-                        common::coords::EAST
-                    } else {
-                        common::coords::SOUTH
-                    } + common::coords::UP * CEILING_HEIGHT;
+            let vs = [
+                from,
+                to,
+                vec3(from.x, from.y, to.z),
+                vec3(to.x, to.y, from.z),
+            ];
 
-                let vs = [
-                    from,
-                    to,
-                    vec3(from.x, from.y, to.z),
-                    vec3(to.x, to.y, from.z),
-                ];
+            let i0 = mesh.vertices.len() as u32;
+            mesh.vertices.extend(vs.into_iter().map(|position| Vertex {
+                position,
+                normal: normal_vec,
+                color: Vec3::ONE,
+            }));
+            mesh.indices
+                .extend([i0, i0 + 2, i0 + 3, i0 + 3, i0 + 2, i0 + 1]);
+        }
 
-                let i0 = mesh.vertices.len() as u32;
-                mesh.vertices.extend(vs.into_iter().map(|position| Vertex {
-                    position,
-                    normal: normal_vec,
-                    color: Vec3::ONE,
-                }));
-                mesh.indices
-                    .extend([i0, i0 + 2, i0 + 3, i0 + 3, i0 + 2, i0 + 1]);
+        match piece {
+            rex::building::DualPiece::Wall { normal, corners } => {
+                wall_segment(
+                    mesh,
+                    piece_pos,
+                    CEILING_HEIGHT,
+                    is_horizontal,
+                    *corners,
+                    *normal,
+                );
             }
             rex::building::DualPiece::Door { .. } => {
+                wall_segment(
+                    mesh,
+                    piece_pos + coords::UP * DOOR_HEIGHT,
+                    CEILING_HEIGHT - DOOR_HEIGHT,
+                    is_horizontal,
+                    [false, false],
+                    DualNormalDirection::NorthWest,
+                );
+                wall_segment(
+                    mesh,
+                    piece_pos + coords::UP * DOOR_HEIGHT,
+                    CEILING_HEIGHT - DOOR_HEIGHT,
+                    is_horizontal,
+                    [false, false],
+                    DualNormalDirection::SouthEast,
+                );
                 let from_se;
                 let from_nw;
-                let nw_normal_vector;
                 let floor_height = dual_pos.z as f32 * LEVEL_HEIGHT;
                 if is_horizontal {
                     from_se =
                         vec3(x, y + WALL_WIDTH, floor_height) + common::coords::UP * DOOR_HEIGHT;
                     from_nw =
                         vec3(x, y - WALL_WIDTH, floor_height) + common::coords::UP * DOOR_HEIGHT;
-                    nw_normal_vector = common::coords::NORTH;
                 } else {
                     from_se =
                         vec3(x + WALL_WIDTH, y, floor_height) + common::coords::UP * DOOR_HEIGHT;
                     from_nw =
                         vec3(x - WALL_WIDTH, y, floor_height) + common::coords::UP * DOOR_HEIGHT;
-                    nw_normal_vector = common::coords::WEST;
                 };
 
                 let to_se = from_se
@@ -159,38 +228,6 @@ pub fn generate_room_wall_mesh(room: &Room, mesh: &mut CpuMesh) {
                         common::coords::SOUTH
                     }
                     + common::coords::UP * (CEILING_HEIGHT - DOOR_HEIGHT);
-
-                // SE wall
-                let vs = [
-                    from_se,
-                    to_se,
-                    vec3(from_se.x, from_se.y, to_se.z),
-                    vec3(to_se.x, to_se.y, from_se.z),
-                ];
-                let i0 = mesh.vertices.len() as u32;
-                mesh.vertices.extend(vs.into_iter().map(|position| Vertex {
-                    position,
-                    normal: -nw_normal_vector,
-                    color: Vec3::ONE,
-                }));
-                mesh.indices
-                    .extend([i0, i0 + 2, i0 + 3, i0 + 3, i0 + 2, i0 + 1]);
-
-                // NW wall
-                let vs = [
-                    from_nw,
-                    to_nw,
-                    vec3(from_nw.x, from_nw.y, to_nw.z),
-                    vec3(to_nw.x, to_nw.y, from_nw.z),
-                ];
-                let i0 = mesh.vertices.len() as u32;
-                mesh.vertices.extend(vs.into_iter().map(|position| Vertex {
-                    position,
-                    normal: nw_normal_vector,
-                    color: Vec3::ONE,
-                }));
-                mesh.indices
-                    .extend([i0, i0 + 2, i0 + 3, i0 + 3, i0 + 2, i0 + 1]);
 
                 // Doorframe ceiling
                 let vs = [

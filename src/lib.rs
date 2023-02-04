@@ -305,9 +305,15 @@ impl V3 {
                 .filter(|(offset, _)| map.cell(cell_pos + IVec2::from(*offset)) != Some(room_id))
                 .for_each(|(dir, normal)| {
                     let pos = cell_to_wall_space(cell_pos, dir).extend(floor_idx);
+                    let corners = [
+                        map.cell(cell_pos + IVec2::from(dir) + IVec2::from(dir.ccw_rotated()))
+                            == Some(room_id),
+                        map.cell(cell_pos + IVec2::from(dir) + IVec2::from(dir.cw_rotated()))
+                            == Some(room_id),
+                    ];
                     room.duals
                         .entry(pos)
-                        .or_insert(building::DualPiece::Wall { normal });
+                        .or_insert(building::DualPiece::Wall { normal, corners });
                 })
         }
     }
@@ -513,12 +519,29 @@ pub enum Direction {
 
 impl Direction {
     #[allow(dead_code)]
-    fn opposite(self) -> Self {
+    pub fn opposite(self) -> Self {
         match self {
             Direction::North => Direction::South,
             Direction::East => Direction::West,
             Direction::South => Direction::North,
             Direction::West => Direction::East,
+        }
+    }
+
+    pub fn cw_rotated(self) -> Direction {
+        match self {
+            Direction::North => Direction::East,
+            Direction::East => Direction::South,
+            Direction::South => Direction::West,
+            Direction::West => Direction::North,
+        }
+    }
+    pub fn ccw_rotated(self) -> Direction {
+        match self {
+            Direction::North => Direction::West,
+            Direction::East => Direction::North,
+            Direction::South => Direction::East,
+            Direction::West => Direction::South,
         }
     }
 }

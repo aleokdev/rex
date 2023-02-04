@@ -98,6 +98,9 @@ pub enum DualPiece {
     /// A single sided wall.
     Wall {
         normal: DualNormalDirection,
+        /// Whether the wall should extend for each end to cover outer corners.
+        /// First bool refers to left end and second to right end (seen with normal opposite to view direction)
+        corners: [bool; 2],
     },
     Door {
         normal: DualNormalDirection,
