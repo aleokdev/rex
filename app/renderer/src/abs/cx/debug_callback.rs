@@ -31,11 +31,13 @@ pub unsafe extern "system" fn debug_callback(
     };
 
     log::log!(level, "{:?} [{}]: {}", ty, name, message);
-    if level == log::Level::Error {
-        log::error!(
-            "Backtrace: {}",
-            std::backtrace::Backtrace::capture().to_string()
-        );
+    if std::env::var("REX_VK_BACKTRACE").is_ok() {
+        if level == log::Level::Error {
+            log::error!(
+                "Backtrace: {}",
+                std::backtrace::Backtrace::capture().to_string()
+            );
+        }
     }
 
     vk::FALSE

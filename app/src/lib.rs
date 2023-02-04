@@ -1,19 +1,28 @@
 mod meshgen;
 
+use std::{
+    collections::HashSet,
+    ops::{Deref, Index},
+};
+
 use common::{Camera, World};
-use glam::Vec3;
+use glam::{ivec3, Vec3};
 use renderer::abs::mesh::{self, CpuMesh};
+use rex::grid::RoomId;
 use winit::{
     dpi::{PhysicalPosition, PhysicalSize},
-    event::{ElementState, Event, WindowEvent},
+    event::{ElementState, Event, KeyboardInput, WindowEvent},
     event_loop::{ControlFlow, EventLoop},
     window::CursorGrabMode,
 };
+
+use crate::meshgen::CEILING_HEIGHT;
 
 struct App {
     pub cx: renderer::abs::Cx,
     pub renderer: renderer::Renderer,
     pub world: World,
+    room_meshes_uploaded: HashSet<RoomId>,
     database: rex::Database,
 }
 
@@ -28,7 +37,6 @@ impl App {
             camera: Camera::new(cx.width as f32 / cx.height as f32),
         };
 
-        renderer.upload_mesh(meshgen::generate_room_mesh(&database, 0));
         let models = tobj::load_obj(
             "app/res/xyz_gizmo.obj",
             &tobj::LoadOptions {
@@ -56,10 +64,25 @@ impl App {
             renderer.upload_mesh(CpuMesh { vertices, indices });
         }
 
+        let mut room_meshes_uploaded = HashSet::new();
+        if std::env::var("REX_MESHGEN_EVERYTHING").is_ok() {
+            for room_id in 0..database.rooms.len() {
+                renderer.upload_mesh(meshgen::generate_room_mesh(&database, room_id));
+                room_meshes_uploaded.insert(room_id);
+                if room_id % 100 == 0 {
+                    log::info!("{}/{}", room_id, database.rooms.len());
+                }
+            }
+        } else {
+            renderer.upload_mesh(meshgen::generate_room_mesh(&database, 0));
+            room_meshes_uploaded.insert(0);
+        }
+
         Ok(App {
             cx,
             renderer,
             world,
+            room_meshes_uploaded,
             database,
         })
     }
@@ -216,12 +239,6 @@ pub fn run(width: u32, height: u32) -> anyhow::Result<()> {
                 if sprint_key_pressed {
                     movement *= 10.;
                 }
-                log::info!(
-                    "{}, forward {}, up {}",
-                    app.world.camera.position(),
-                    app.world.camera.forward(),
-                    app.world.camera.up()
-                );
                 app.world
                     .camera
                     .move_local_coords(movement * SPEED * delta_s);
