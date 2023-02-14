@@ -2,7 +2,7 @@ use common::coords;
 use glam::{ivec2, vec3, IVec2, Vec3};
 use renderer::abs::mesh::{CpuMesh, Vertex};
 use rex::{
-    building::{BuildingMap, DualNormalDirection, Room},
+    building::{DualNormalDirection, Room},
     grid::RoomId,
     Database,
 };
@@ -11,6 +11,8 @@ pub const DOOR_HEIGHT: f32 = 2.1;
 pub const CEILING_HEIGHT: f32 = 3.4;
 pub const LEVEL_HEIGHT: f32 = 3.5;
 pub const WALL_HALF_WIDTH: f32 = 0.1;
+
+pub const WALL_COLOR: Vec3 = vec3(217. / 255., 210. / 255., 30. / 255.);
 
 pub fn generate_room_mesh(db: &Database, id: RoomId) -> CpuMesh {
     let mut mesh = CpuMesh::default();
@@ -50,14 +52,18 @@ pub fn generate_room_floor_ceiling_mesh(
                 start,
                 start + common::coords::SOUTH + common::coords::EAST,
                 common::coords::UP,
-                vec3(0.98, 0.3, 0.2),
+                vec3(133. / 255., 96. / 255., 32. / 255.),
             );
             add_quad(
                 mesh,
                 start + coords::UP * CEILING_HEIGHT,
                 start + common::coords::SOUTH + common::coords::EAST + coords::UP * CEILING_HEIGHT,
                 common::coords::DOWN,
-                vec3(0.78, 0.9, 0.67),
+                if position.x % 4 == 0 && position.y % 4 == 0 {
+                    Vec3::ONE * 999999.
+                } else {
+                    vec3(232. / 255., 176. / 255., 116. / 255.)
+                },
             );
         }
     }
@@ -165,7 +171,7 @@ pub fn generate_room_wall_mesh(room: &Room, mesh: &mut CpuMesh) {
             mesh.vertices.extend(vs.into_iter().map(|position| Vertex {
                 position,
                 normal: normal_vec,
-                color: Vec3::ONE,
+                color: WALL_COLOR,
             }));
             mesh.indices
                 .extend([i0, i0 + 2, i0 + 3, i0 + 3, i0 + 2, i0 + 1]);
@@ -240,7 +246,7 @@ pub fn generate_room_wall_mesh(room: &Room, mesh: &mut CpuMesh) {
                 mesh.vertices.extend(vs.into_iter().map(|position| Vertex {
                     position,
                     normal: coords::DOWN,
-                    color: Vec3::ONE,
+                    color: WALL_COLOR,
                 }));
                 mesh.indices
                     .extend([i0, i0 + 2, i0 + 3, i0 + 3, i0 + 2, i0 + 1]);
@@ -269,7 +275,7 @@ pub fn generate_room_wall_mesh(room: &Room, mesh: &mut CpuMesh) {
                     } else {
                         coords::SOUTH
                     },
-                    color: Vec3::ONE,
+                    color: WALL_COLOR,
                 }));
                 mesh.indices
                     .extend([i0, i0 + 2, i0 + 3, i0 + 3, i0 + 2, i0 + 1]);
@@ -297,7 +303,7 @@ pub fn generate_room_wall_mesh(room: &Room, mesh: &mut CpuMesh) {
                     } else {
                         coords::NORTH
                     },
-                    color: Vec3::ONE,
+                    color: WALL_COLOR,
                 }));
                 mesh.indices
                     .extend([i0, i0 + 2, i0 + 3, i0 + 3, i0 + 2, i0 + 1]);
