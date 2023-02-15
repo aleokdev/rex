@@ -27,9 +27,15 @@ struct App {
 impl App {
     unsafe fn new(event_loop: &EventLoop<()>, width: u32, height: u32) -> anyhow::Result<Self> {
         let mut cx = renderer::abs::Cx::new(event_loop, width, height)?;
+        log::info!("Loading database...");
+        let start = std::time::Instant::now();
         let database = serde_json::from_reader::<_, rex::Database>(std::io::BufReader::new(
             std::fs::File::open("test.rex").unwrap(),
         ))?;
+        log::info!(
+            "Loaded database in {:3}s",
+            (std::time::Instant::now() - start).as_secs_f32()
+        );
         let mut renderer = renderer::Renderer::new(&mut cx)?;
         let world = World {
             camera: Camera::new(vec3(0., 0., 1.68), cx.width as f32 / cx.height as f32),
@@ -98,6 +104,7 @@ pub fn run(width: u32, height: u32) -> anyhow::Result<()> {
     let mut movement_keys_pressed = [false; 6];
     let mut sprint_key_pressed = false;
     let mut focused = false;
+    let mut noclip = false;
     event_loop.run(move |event, _target, control_flow| {
         let Some(app) = application.as_mut() else { return };
         *control_flow = ControlFlow::Poll;
@@ -126,6 +133,11 @@ pub fn run(width: u32, height: u32) -> anyhow::Result<()> {
                         if state == winit::event::ElementState::Pressed =>
                     {
                         app.renderer.set_wireframe(!app.renderer.wireframe());
+                    }
+                    winit::event::VirtualKeyCode::N
+                        if state == winit::event::ElementState::Pressed =>
+                    {
+                        noclip = !noclip;
                     }
                     winit::event::VirtualKeyCode::W => {
                         movement_keys_pressed[0] = state == winit::event::ElementState::Pressed
@@ -234,8 +246,10 @@ pub fn run(width: u32, height: u32) -> anyhow::Result<()> {
                 movement.z -= if movement_keys_pressed[1] { 1. } else { 0. };
                 movement.x -= if movement_keys_pressed[2] { 1. } else { 0. };
                 movement.x += if movement_keys_pressed[3] { 1. } else { 0. };
-                movement.y += if movement_keys_pressed[4] { 1. } else { 0. };
-                movement.y -= if movement_keys_pressed[5] { 1. } else { 0. };
+                if noclip {
+                    movement.y += if movement_keys_pressed[4] { 1. } else { 0. };
+                    movement.y -= if movement_keys_pressed[5] { 1. } else { 0. };
+                }
                 if sprint_key_pressed {
                     movement *= 10.;
                 }
@@ -246,7 +260,11 @@ pub fn run(width: u32, height: u32) -> anyhow::Result<()> {
                         + app.world.camera.right().truncate().extend(0.).normalize() * movement.x;
                 let starting_pos = app.world.camera.position();
 
-                let current_pos = move_and_slide(&app.database, starting_pos, target_displacement);
+                let current_pos = if noclip {
+                    starting_pos + target_displacement
+                } else {
+                    move_and_slide(&app.database, starting_pos, target_displacement)
+                };
                 app.world.camera.set_position(current_pos);
                 app.redraw(delta).unwrap();
 
