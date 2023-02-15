@@ -172,6 +172,7 @@ pub fn generate_room_wall_mesh(room: &Room, mesh: &mut CpuMesh) {
                 position,
                 normal: normal_vec,
                 color: WALL_COLOR,
+                uv: glam::Vec2::ZERO,
             }));
             mesh.indices
                 .extend([i0, i0 + 2, i0 + 3, i0 + 3, i0 + 2, i0 + 1]);
@@ -247,6 +248,7 @@ pub fn generate_room_wall_mesh(room: &Room, mesh: &mut CpuMesh) {
                     position,
                     normal: coords::DOWN,
                     color: WALL_COLOR,
+                    uv: glam::Vec2::ZERO,
                 }));
                 mesh.indices
                     .extend([i0, i0 + 2, i0 + 3, i0 + 3, i0 + 2, i0 + 1]);
@@ -276,6 +278,7 @@ pub fn generate_room_wall_mesh(room: &Room, mesh: &mut CpuMesh) {
                         coords::SOUTH
                     },
                     color: WALL_COLOR,
+                    uv: glam::Vec2::ZERO,
                 }));
                 mesh.indices
                     .extend([i0, i0 + 2, i0 + 3, i0 + 3, i0 + 2, i0 + 1]);
@@ -304,6 +307,7 @@ pub fn generate_room_wall_mesh(room: &Room, mesh: &mut CpuMesh) {
                         coords::NORTH
                     },
                     color: WALL_COLOR,
+                    uv: glam::Vec2::ZERO,
                 }));
                 mesh.indices
                     .extend([i0, i0 + 2, i0 + 3, i0 + 3, i0 + 2, i0 + 1]);
@@ -327,6 +331,7 @@ pub fn add_quad(mesh: &mut CpuMesh, from: Vec3, to: Vec3, normal: Vec3, color: V
         position,
         normal,
         color,
+        uv: glam::Vec2::ZERO,
     }));
     mesh.indices
         .extend([i0, i0 + 2, i0 + 3, i0 + 3, i0 + 2, i0 + 1]);

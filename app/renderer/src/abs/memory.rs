@@ -1,6 +1,6 @@
 use super::{
     buffer::{Buffer, BufferSlice},
-    image::Image,
+    image::GpuImage,
 };
 use ash::extensions::ext::DebugUtils;
 use ash::vk::{self, Handle};
@@ -364,7 +364,10 @@ impl GpuMemory {
         })
     }
 
-    pub unsafe fn allocate_image(&mut self, info: &vk::ImageCreateInfo) -> anyhow::Result<Image> {
+    pub unsafe fn allocate_image(
+        &mut self,
+        info: &vk::ImageCreateInfo,
+    ) -> anyhow::Result<GpuImage> {
         let image = self.device.create_image(info, None)?;
         let requirements = self.device.get_image_memory_requirements(image);
 
@@ -400,7 +403,7 @@ impl GpuMemory {
             allocation.allocation.offset(),
         )?;
 
-        Ok(Image {
+        Ok(GpuImage {
             raw: image,
             allocation: Some(GpuAllocation {
                 memory: allocation.block_memory,

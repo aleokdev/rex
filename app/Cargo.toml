@@ -26,3 +26,4 @@ tobj = "3.2.3"
 renderer = { path = "renderer" }
 common = { path = "common" }
 serde_json = "1.0.91"
+image = "0.24.5"

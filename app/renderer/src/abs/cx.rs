@@ -1,7 +1,7 @@
 mod debug_callback;
 
 use super::{
-    image::{Image, Texture},
+    image::{GpuImage, GpuTexture},
     memory::{self, GpuMemory},
     util::subresource_range,
 };
@@ -21,8 +21,8 @@ use winit::{
 };
 
 pub struct SwapchainTexture {
-    pub color: Texture,
-    pub depth: Texture,
+    pub color: GpuTexture,
+    pub depth: GpuTexture,
 }
 
 pub struct SwapchainTextures(pub Vec<SwapchainTexture>);
@@ -80,7 +80,10 @@ impl Cx {
             .with_inner_size(PhysicalSize::new(width, height))
             .build(event_loop)?;
 
-        let layers = [cstr!("VK_LAYER_KHRONOS_validation")];
+        let mut layers = Vec::new();
+        if std::env::var("REX_ENABLE_VALIDATION").is_ok() {
+            layers.push(cstr!("VK_LAYER_KHRONOS_validation"));
+        }
         let raw_layers = layers
             .iter()
             .map(|layer| layer.as_ptr())
@@ -334,7 +337,7 @@ impl Cx {
                     height,
                     depth: 1,
                 };
-                let color = Image {
+                let color = GpuImage {
                     raw: image,
                     allocation: None,
                     // synthesise some assumed information about the swapchain images
@@ -390,11 +393,11 @@ impl Cx {
                 )?;
 
                 Ok(SwapchainTexture {
-                    color: Texture {
+                    color: GpuTexture {
                         image: color,
                         view: color_view,
                     },
-                    depth: Texture {
+                    depth: GpuTexture {
                         image: depth,
                         view: depth_view,
                     },

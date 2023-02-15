@@ -3,7 +3,7 @@ mod meshgen;
 
 use std::collections::HashSet;
 
-use glam::{ivec3, vec3, Vec3};
+use glam::{ivec3, vec3, Vec2, Vec3};
 use renderer::{
     abs::mesh::{self, CpuMesh},
     Camera, RenderData,
@@ -44,7 +44,7 @@ impl App {
             objects: vec![],
         };
 
-        let models = tobj::load_obj(
+        let mut models = tobj::load_obj(
             "app/res/xyz_gizmo.obj",
             &tobj::LoadOptions {
                 ignore_lines: true,
@@ -54,17 +54,40 @@ impl App {
             },
         )?
         .0;
+        models.extend(
+            tobj::load_obj(
+                "app/res/uvcube.obj",
+                &tobj::LoadOptions {
+                    ignore_lines: true,
+                    ignore_points: true,
+                    single_index: true,
+                    triangulate: true,
+                },
+            )?
+            .0
+            .into_iter(),
+        );
         for model in models {
-            let mesh = model.mesh;
+            let mut mesh = model.mesh;
+            if mesh.vertex_color.is_empty() {
+                mesh.vertex_color
+                    .extend(std::iter::repeat(1.).take(mesh.positions.len()));
+            }
+            if mesh.texcoords.is_empty() {
+                mesh.texcoords
+                    .extend(std::iter::repeat(0.).take(mesh.positions.len() / 3 * 2));
+            }
             let vertices = mesh
                 .positions
                 .chunks_exact(3)
                 .zip(mesh.normals.chunks_exact(3))
                 .zip(mesh.vertex_color.chunks_exact(3))
-                .map(|((position, normal), color)| mesh::Vertex {
+                .zip(mesh.texcoords.chunks_exact(2))
+                .map(|(((position, normal), color), uv)| mesh::Vertex {
                     position: <[f32; 3]>::try_from(position).unwrap().into(),
                     normal: <[f32; 3]>::try_from(normal).unwrap().into(),
                     color: <[f32; 3]>::try_from(color).unwrap().into(),
+                    uv: <[f32; 2]>::try_from(uv).unwrap().into(),
                 })
                 .collect::<Vec<_>>();
             let indices = mesh.indices;
@@ -91,6 +114,8 @@ impl App {
             });
             room_meshes_uploaded.insert(0);
         }
+
+        renderer.upload_image(image::open("app/res/unknown.png")?.into_rgb8());
 
         Ok(App {
             cx,

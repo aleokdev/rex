@@ -7,7 +7,7 @@ pub use camera::Camera;
 pub use data::RenderData;
 pub use object::RenderObject;
 
-use std::{collections::VecDeque, ffi::CStr};
+use std::{collections::VecDeque, ffi::CStr, num::NonZeroU64};
 
 use crate::abs::{
     mesh::GpuVertex,
@@ -16,12 +16,13 @@ use crate::abs::{
 };
 
 use abs::{
+    image::{GpuImageHandle, GpuTexture},
     memory::GpuMemory,
     mesh::{CpuMesh, GpuIndex, GpuMeshHandle, Vertex},
 };
 use ash::vk::{self};
 use nonzero_ext::{nonzero, NonZeroAble};
-use space_alloc::{BuddyAllocation, BuddyAllocator, OutOfMemory};
+use space_alloc::{BuddyAllocation, BuddyAllocator, LinearAllocator, OutOfMemory};
 
 /// Represents an in-flight render frame.
 pub struct Frame {
@@ -96,10 +97,14 @@ pub struct Renderer {
     meshes_to_upload: VecDeque<abs::mesh::CpuMesh>,
     // It is important that the `meshes_to_upload` order is respected, as mesh handles' internal ID depend on it!
     meshes: Vec<abs::mesh::GpuMesh>,
+    images_to_upload: VecDeque<image::RgbImage>,
+    textures: Vec<abs::image::GpuTexture>,
     pub world_uniform: abs::buffer::BufferSlice<BuddyAllocation>,
     pub world_uniform_set: vk::DescriptorSet,
     pub model_uniform: abs::buffer::BufferSlice<BuddyAllocation>,
     pub model_uniform_set: vk::DescriptorSet,
+    pub texture_uniform_set: vk::DescriptorSet,
+    pub sampler: vk::Sampler,
 
     pub model_rotation: f32,
 
@@ -237,9 +242,34 @@ impl Renderer {
                 )
                 .build(cx, &mut ds_allocator, &mut ds_layout_cache)?;
 
+        let sampler_info = vk::SamplerCreateInfo::builder()
+            .address_mode_u(vk::SamplerAddressMode::REPEAT)
+            .address_mode_v(vk::SamplerAddressMode::REPEAT)
+            .address_mode_w(vk::SamplerAddressMode::REPEAT)
+            .anisotropy_enable(false)
+            .compare_enable(false)
+            .mag_filter(vk::Filter::LINEAR)
+            .min_filter(vk::Filter::LINEAR);
+        let sampler = cx.device.create_sampler(&sampler_info, None)?;
+
+        let (texture_uniform_set, texture_uniform_set_layout) =
+            abs::descriptor::DescriptorBuilder::new()
+                .bind_image(
+                    0,
+                    &[*vk::DescriptorImageInfo::builder()
+                        .sampler(sampler)
+                        .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)],
+                    vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
+                    vk::ShaderStageFlags::FRAGMENT,
+                )
+                .build(cx, &mut ds_allocator, &mut ds_layout_cache)?;
+
         let pipeline_layout = cx.device.create_pipeline_layout(
-            &vk::PipelineLayoutCreateInfo::builder()
-                .set_layouts(&[world_uniform_set_layout, model_uniform_set_layout]),
+            &vk::PipelineLayoutCreateInfo::builder().set_layouts(&[
+                world_uniform_set_layout,
+                model_uniform_set_layout,
+                texture_uniform_set_layout,
+            ]),
             None,
         )?;
 
@@ -279,10 +309,15 @@ impl Renderer {
 
             meshes_to_upload: Default::default(),
             meshes: Default::default(),
+            images_to_upload: Default::default(),
+            textures: Default::default(),
             world_uniform,
             world_uniform_set,
             model_uniform,
             model_uniform_set,
+            texture_uniform_set,
+
+            sampler,
 
             model_rotation: 0.,
 
@@ -430,6 +465,27 @@ impl Renderer {
                 }
             }
         }
+        if let Some(img) = self.images_to_upload.pop_front() {
+            match Self::setup_image(
+                cx,
+                &mut self.arenas,
+                &mut frame,
+                &img,
+                self.sampler,
+                self.texture_uniform_set,
+            ) {
+                Ok(texture) => {
+                    self.textures.push(texture);
+                }
+                Err(err) => {
+                    if err.downcast_ref::<OutOfMemory>().is_some() {
+                        log::error!("Could not upload image: Out of memory",);
+                    } else {
+                        return Err(err);
+                    }
+                }
+            }
+        }
 
         // Upload the uniforms for this frame.
         let world_uniform = WorldUniform {
@@ -524,7 +580,11 @@ impl Renderer {
             vk::PipelineBindPoint::GRAPHICS,
             self.pipeline_layout,
             0,
-            &[self.world_uniform_set, self.model_uniform_set],
+            &[
+                self.world_uniform_set,
+                self.model_uniform_set,
+                self.texture_uniform_set,
+            ],
             &[],
         );
 
@@ -600,6 +660,7 @@ impl Renderer {
                 position: v.position.to_array(),
                 normal: v.normal.to_array(),
                 color: v.color.to_array(),
+                uv: v.uv.to_array(),
             })
             .collect::<Vec<_>>();
         let vertices_gpu = arenas.vertex.suballocate(
@@ -637,11 +698,145 @@ impl Renderer {
         Ok(gpu_mesh)
     }
 
+    unsafe fn setup_image(
+        cx: &mut abs::Cx,
+        arenas: &mut Arenas,
+        frame: &mut Frame,
+        image: &image::RgbImage,
+        sampler: vk::Sampler,
+        desc: vk::DescriptorSet,
+    ) -> anyhow::Result<abs::image::GpuTexture> {
+        let extent = vk::Extent3D {
+            width: image.width(),
+            height: image.height(),
+            depth: 1,
+        };
+        let info = vk::ImageCreateInfo::builder()
+            .extent(extent)
+            .array_layers(1)
+            .format(vk::Format::B8G8R8A8_SRGB)
+            .image_type(vk::ImageType::TYPE_2D)
+            .initial_layout(vk::ImageLayout::UNDEFINED)
+            .usage(vk::ImageUsageFlags::SAMPLED | vk::ImageUsageFlags::TRANSFER_DST)
+            .tiling(vk::ImageTiling::OPTIMAL)
+            .sharing_mode(vk::SharingMode::EXCLUSIVE)
+            .samples(vk::SampleCountFlags::TYPE_1)
+            .mip_levels(1);
+        let gpu_img = cx.memory.allocate_image(&info)?;
+
+        let subresource_range = *vk::ImageSubresourceRange::builder()
+            .aspect_mask(vk::ImageAspectFlags::COLOR)
+            .base_mip_level(0)
+            .level_count(1)
+            .base_array_layer(0)
+            .layer_count(1);
+        let image_mem_barrier = vk::ImageMemoryBarrier::builder()
+            .image(gpu_img.raw)
+            .old_layout(vk::ImageLayout::UNDEFINED)
+            .new_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
+            .subresource_range(subresource_range);
+        cx.device.cmd_pipeline_barrier(
+            frame.cmd,
+            vk::PipelineStageFlags::TOP_OF_PIPE,
+            vk::PipelineStageFlags::TRANSFER,
+            vk::DependencyFlags::empty(),
+            &[],
+            &[],
+            &[*image_mem_barrier],
+        );
+
+        let scratch = cx.memory.allocate_scratch_buffer(
+            *vk::BufferCreateInfo::builder()
+                .sharing_mode(vk::SharingMode::EXCLUSIVE)
+                .size(image.width() as u64 * image.height() as u64 * 4)
+                .usage(vk::BufferUsageFlags::TRANSFER_SRC),
+            abs::memory::MemoryUsage::CpuToGpu,
+            true,
+        )?;
+        let pixel_data = image
+            .pixels()
+            // Convert RGB -> BGRA
+            .map(|p| [p.0[2], p.0[1], p.0[0], 0xFF].into_iter())
+            .collect::<Vec<_>>();
+        scratch.allocation.write_mapped(&pixel_data)?;
+
+        cx.device.cmd_copy_buffer_to_image(
+            frame.cmd,
+            scratch.raw,
+            gpu_img.raw,
+            vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+            &[*vk::BufferImageCopy::builder()
+                .buffer_offset(0)
+                .buffer_row_length(0)
+                .buffer_image_height(0)
+                .image_extent(extent)
+                .image_offset(vk::Offset3D::default())
+                .image_subresource(
+                    *vk::ImageSubresourceLayers::builder()
+                        .aspect_mask(vk::ImageAspectFlags::COLOR)
+                        .mip_level(0)
+                        .base_array_layer(0)
+                        .layer_count(1),
+                )],
+        );
+
+        let image_mem_barrier = vk::ImageMemoryBarrier::builder()
+            .image(gpu_img.raw)
+            .old_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
+            .new_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+            .subresource_range(subresource_range);
+        cx.device.cmd_pipeline_barrier(
+            frame.cmd,
+            vk::PipelineStageFlags::TOP_OF_PIPE,
+            vk::PipelineStageFlags::TRANSFER,
+            vk::DependencyFlags::empty(),
+            &[],
+            &[],
+            &[*image_mem_barrier],
+        );
+
+        let view = cx.device.create_image_view(
+            &vk::ImageViewCreateInfo::builder()
+                .components(vk::ComponentMapping::default())
+                .format(vk::Format::B8G8R8A8_SRGB)
+                .image(gpu_img.raw)
+                .subresource_range(subresource_range)
+                .view_type(vk::ImageViewType::TYPE_2D),
+            None,
+        )?;
+
+        // HACK
+        let img_info = &[*vk::DescriptorImageInfo::builder()
+            .sampler(sampler)
+            .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+            .image_view(view)];
+        cx.device.update_descriptor_sets(
+            &[*vk::WriteDescriptorSet::builder()
+                .dst_binding(0)
+                .dst_set(desc)
+                .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                .image_info(img_info)],
+            &[],
+        );
+
+        Ok(GpuTexture {
+            image: gpu_img,
+            view,
+        })
+    }
+
     #[must_use = "uploading a mesh does not automatically show it as an object, you must use the handle on an object \
     for it to be useful"]
     pub fn upload_mesh(&mut self, mesh: CpuMesh) -> GpuMeshHandle {
         self.meshes_to_upload.push_back(mesh);
         GpuMeshHandle(self.meshes_to_upload.len() + self.meshes.len() - 1)
+    }
+
+    #[must_use = "uploading an image does not automatically show it on screen, you must use the handle on an object \
+    for it to be useful"]
+    pub fn upload_image(&mut self, image: image::RgbImage) -> GpuImageHandle {
+        self.images_to_upload.push_back(image);
+        GpuImageHandle(self.images_to_upload.len() + self.textures.len() - 1)
     }
 
     pub unsafe fn destroy(mut self, cx: &mut abs::Cx) -> anyhow::Result<()> {
@@ -662,6 +857,9 @@ impl Renderer {
 
             drop(frame.allocator);
         });
+        for texture in self.textures {
+            texture.destroy(&cx.device, &mut cx.memory);
+        }
 
         self.arenas.destroy(&cx.device, &mut cx.memory)?;
         drop(self.ds_layout_cache);
@@ -773,7 +971,6 @@ pub struct Arenas {
     pub vertex: abs::buffer::BufferArena<BuddyAllocator>,
     pub index: abs::buffer::BufferArena<BuddyAllocator>,
     pub uniform: abs::buffer::BufferArena<BuddyAllocator>,
-    pub scratch: abs::buffer::BufferArena<BuddyAllocator>,
 }
 
 impl Arenas {
@@ -820,18 +1017,6 @@ impl Arenas {
                 128,
                 cstr::cstr!("Uniform buffer arena").to_owned(),
             ),
-            scratch: abs::buffer::BufferArena::new(
-                vk::BufferCreateInfo::builder()
-                    .size(64 * 128 * 1024)
-                    .usage(vk::BufferUsageFlags::TRANSFER_SRC)
-                    .sharing_mode(vk::SharingMode::EXCLUSIVE)
-                    .build(),
-                abs::memory::MemoryUsage::CpuToGpu,
-                nonzero!(1u64),
-                true,
-                128,
-                cstr::cstr!("Scratch buffer arena").to_owned(),
-            ),
         }
     }
 
@@ -843,7 +1028,6 @@ impl Arenas {
         self.vertex.destroy(device, memory)?;
         self.index.destroy(device, memory)?;
         self.uniform.destroy(device, memory)?;
-        self.scratch.destroy(device, memory)?;
         Ok(())
     }
 }

@@ -1,16 +1,17 @@
 use ash::vk;
+use image::GenericImageView;
 use space_alloc::BuddyAllocation;
 
 use super::memory::{GpuAllocation, GpuMemory};
 
 #[derive(Debug)]
-pub struct Image {
+pub struct GpuImage {
     pub raw: vk::Image,
     pub allocation: Option<GpuAllocation<BuddyAllocation>>,
     pub info: vk::ImageCreateInfo,
 }
 
-impl Image {
+impl GpuImage {
     pub unsafe fn destroy(
         self,
         device: &ash::Device,
@@ -25,12 +26,12 @@ impl Image {
 }
 
 #[derive(Debug)]
-pub struct Texture {
-    pub image: Image,
+pub struct GpuTexture {
+    pub image: GpuImage,
     pub view: vk::ImageView,
 }
 
-impl Texture {
+impl GpuTexture {
     pub unsafe fn destroy(
         self,
         device: &ash::Device,
@@ -41,3 +42,5 @@ impl Texture {
         Ok(())
     }
 }
+
+pub struct GpuImageHandle(pub(crate) usize);
