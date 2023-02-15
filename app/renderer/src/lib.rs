@@ -1,4 +1,9 @@
 pub mod abs;
+mod camera;
+mod data;
+
+pub use camera::Camera;
+pub use data::RenderData;
 
 use std::{collections::VecDeque, ffi::CStr};
 
@@ -13,7 +18,6 @@ use abs::{
     mesh::{CpuMesh, GpuIndex, Vertex},
 };
 use ash::vk::{self};
-use common::World;
 use nonzero_ext::{nonzero, NonZeroAble};
 use space_alloc::{BuddyAllocation, BuddyAllocator, OutOfMemory};
 
@@ -327,7 +331,7 @@ impl Renderer {
     pub unsafe fn draw(
         &mut self,
         cx: &mut abs::Cx,
-        world: &World,
+        data: &RenderData,
         _delta: std::time::Duration,
     ) -> anyhow::Result<()> {
         // Get the next frame to draw onto:
@@ -426,10 +430,10 @@ impl Renderer {
 
         // Upload the uniforms for this frame.
         let world_uniform = WorldUniform {
-            proj: world.camera.proj(),
-            view: world.camera.view(),
-            camera_pos: world.camera.position().extend(0.),
-            camera_dir: world.camera.forward().extend(0.),
+            proj: data.camera.proj(),
+            view: data.camera.view(),
+            camera_pos: data.camera.position().extend(0.),
+            camera_dir: data.camera.forward().extend(0.),
         };
 
         // Rotate at 1 sec / turn

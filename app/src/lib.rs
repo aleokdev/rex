@@ -3,9 +3,11 @@ mod meshgen;
 
 use std::collections::HashSet;
 
-use common::{Camera, World};
 use glam::{ivec3, vec3, Vec3};
-use renderer::abs::mesh::{self, CpuMesh};
+use renderer::{
+    abs::mesh::{self, CpuMesh},
+    Camera, RenderData,
+};
 use rex::grid::RoomId;
 use winit::{
     dpi::{PhysicalPosition, PhysicalSize},
@@ -19,7 +21,7 @@ use crate::{collision::move_and_slide, meshgen::CEILING_HEIGHT};
 struct App {
     pub cx: renderer::abs::Cx,
     pub renderer: renderer::Renderer,
-    pub world: World,
+    pub render_data: RenderData,
     room_meshes_uploaded: HashSet<RoomId>,
     database: rex::Database,
 }
@@ -37,7 +39,7 @@ impl App {
             (std::time::Instant::now() - start).as_secs_f32()
         );
         let mut renderer = renderer::Renderer::new(&mut cx)?;
-        let world = World {
+        let world = RenderData {
             camera: Camera::new(vec3(0., 0., 1.68), cx.width as f32 / cx.height as f32),
         };
 
@@ -85,14 +87,14 @@ impl App {
         Ok(App {
             cx,
             renderer,
-            world,
+            render_data: world,
             room_meshes_uploaded,
             database,
         })
     }
 
     unsafe fn redraw(&mut self, delta: std::time::Duration) -> anyhow::Result<()> {
-        self.renderer.draw(&mut self.cx, &self.world, delta)
+        self.renderer.draw(&mut self.cx, &self.render_data, delta)
     }
 }
 
@@ -195,7 +197,7 @@ pub fn run(width: u32, height: u32) -> anyhow::Result<()> {
             Event::DeviceEvent { event, .. } if focused => match event {
                 winit::event::DeviceEvent::MouseMotion { delta } => {
                     const LOOK_SENSITIVITY: f32 = 0.001;
-                    app.world.camera.look(
+                    app.render_data.camera.look(
                         -delta.0 as f32 * LOOK_SENSITIVITY,
                         -delta.1 as f32 * LOOK_SENSITIVITY,
                     );
@@ -203,7 +205,7 @@ pub fn run(width: u32, height: u32) -> anyhow::Result<()> {
                 _ => (),
             },
             Event::MainEventsCleared => {
-                let player_pos = app.world.camera.position();
+                let player_pos = app.render_data.camera.position();
                 let player_pos = ivec3(
                     player_pos.x.floor() as i32,
                     player_pos.y.floor() as i32,
@@ -254,18 +256,31 @@ pub fn run(width: u32, height: u32) -> anyhow::Result<()> {
                     movement *= 10.;
                 }
                 let movement = movement * SPEED * delta_s;
-                let target_displacement =
-                    app.world.camera.forward().truncate().extend(0.).normalize() * movement.z
-                        + app.world.camera.up() * movement.y
-                        + app.world.camera.right().truncate().extend(0.).normalize() * movement.x;
-                let starting_pos = app.world.camera.position();
+                let target_displacement = app
+                    .render_data
+                    .camera
+                    .forward()
+                    .truncate()
+                    .extend(0.)
+                    .normalize()
+                    * movement.z
+                    + app.render_data.camera.up() * movement.y
+                    + app
+                        .render_data
+                        .camera
+                        .right()
+                        .truncate()
+                        .extend(0.)
+                        .normalize()
+                        * movement.x;
+                let starting_pos = app.render_data.camera.position();
 
                 let current_pos = if noclip {
                     starting_pos + target_displacement
                 } else {
                     move_and_slide(&app.database, starting_pos, target_displacement)
                 };
-                app.world.camera.set_position(current_pos);
+                app.render_data.camera.set_position(current_pos);
                 app.redraw(delta).unwrap();
 
                 last_time = now_time;
