@@ -39,8 +39,9 @@ impl App {
             (std::time::Instant::now() - start).as_secs_f32()
         );
         let mut renderer = renderer::Renderer::new(&mut cx)?;
-        let world = RenderData {
+        let mut render_data = RenderData {
             camera: Camera::new(vec3(0., 0., 1.68), cx.width as f32 / cx.height as f32),
+            objects: vec![],
         };
 
         let models = tobj::load_obj(
@@ -67,27 +68,34 @@ impl App {
                 })
                 .collect::<Vec<_>>();
             let indices = mesh.indices;
-            renderer.upload_mesh(CpuMesh { vertices, indices });
+            render_data.objects.push(renderer::RenderObject {
+                mesh_handle: renderer.upload_mesh(CpuMesh { vertices, indices }),
+            });
         }
 
         let mut room_meshes_uploaded = HashSet::new();
         if std::env::var("REX_MESHGEN_EVERYTHING").is_ok() {
             for room_id in 0..database.rooms.len() {
-                renderer.upload_mesh(meshgen::generate_room_mesh(&database, room_id));
+                render_data.objects.push(renderer::RenderObject {
+                    mesh_handle: renderer
+                        .upload_mesh(meshgen::generate_room_mesh(&database, room_id)),
+                });
                 room_meshes_uploaded.insert(room_id);
                 if room_id % 100 == 0 {
                     log::info!("{}/{}", room_id, database.rooms.len());
                 }
             }
         } else {
-            renderer.upload_mesh(meshgen::generate_room_mesh(&database, 0));
+            render_data.objects.push(renderer::RenderObject {
+                mesh_handle: renderer.upload_mesh(meshgen::generate_room_mesh(&database, 0)),
+            });
             room_meshes_uploaded.insert(0);
         }
 
         Ok(App {
             cx,
             renderer,
-            render_data: world,
+            render_data,
             room_meshes_uploaded,
             database,
         })
@@ -230,8 +238,11 @@ pub fn run(width: u32, height: u32) -> anyhow::Result<()> {
                         .filter(|room| !app.room_meshes_uploaded.contains(&room))
                         .collect::<Vec<_>>();
                     for &room_id in rooms_to_load {
-                        app.renderer
-                            .upload_mesh(meshgen::generate_room_mesh(&app.database, room_id));
+                        app.render_data.objects.push(renderer::RenderObject {
+                            mesh_handle: app
+                                .renderer
+                                .upload_mesh(meshgen::generate_room_mesh(&app.database, room_id)),
+                        });
                         app.room_meshes_uploaded.insert(room_id);
                     }
                 }

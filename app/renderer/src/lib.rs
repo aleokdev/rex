@@ -1,9 +1,11 @@
 pub mod abs;
 mod camera;
 mod data;
+mod object;
 
 pub use camera::Camera;
 pub use data::RenderData;
+pub use object::RenderObject;
 
 use std::{collections::VecDeque, ffi::CStr};
 
@@ -15,7 +17,7 @@ use crate::abs::{
 
 use abs::{
     memory::GpuMemory,
-    mesh::{CpuMesh, GpuIndex, Vertex},
+    mesh::{CpuMesh, GpuIndex, GpuMeshHandle, Vertex},
 };
 use ash::vk::{self};
 use nonzero_ext::{nonzero, NonZeroAble};
@@ -92,6 +94,7 @@ pub struct Renderer {
     pub framebuffers: Vec<vk::Framebuffer>,
 
     meshes_to_upload: VecDeque<abs::mesh::CpuMesh>,
+    // It is important that the `meshes_to_upload` order is respected, as mesh handles' internal ID depend on it!
     meshes: Vec<abs::mesh::GpuMesh>,
     pub world_uniform: abs::buffer::BufferSlice<BuddyAllocation>,
     pub world_uniform_set: vk::DescriptorSet,
@@ -516,7 +519,6 @@ impl Renderer {
         );
 
         // Bind the camera & model uniform descriptor sets and cube vertex/index buffers.
-        // TODO: Upload model uniforms per-mesh. Store models/objects instead of meshes.
         cx.device.cmd_bind_descriptor_sets(
             frame.cmd,
             vk::PipelineBindPoint::GRAPHICS,
@@ -526,7 +528,8 @@ impl Renderer {
             &[],
         );
 
-        for mesh in self.meshes.iter() {
+        for object in data.objects.iter() {
+            let Some(mesh) = self.meshes.get(object.mesh_handle.0) else { continue};
             cx.device.cmd_bind_index_buffer(
                 frame.cmd,
                 mesh.indices.buffer.raw,
@@ -634,8 +637,11 @@ impl Renderer {
         Ok(gpu_mesh)
     }
 
-    pub fn upload_mesh(&mut self, mesh: CpuMesh) {
+    #[must_use = "uploading a mesh does not automatically show it as an object, you must use the handle on an object \
+    for it to be useful"]
+    pub fn upload_mesh(&mut self, mesh: CpuMesh) -> GpuMeshHandle {
         self.meshes_to_upload.push_back(mesh);
+        GpuMeshHandle(self.meshes_to_upload.len() + self.meshes.len() - 1)
     }
 
     pub unsafe fn destroy(mut self, cx: &mut abs::Cx) -> anyhow::Result<()> {

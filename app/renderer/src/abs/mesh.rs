@@ -123,6 +123,8 @@ impl<Allocation: space_alloc::Allocation> GpuMesh<Allocation> {
     }
 }
 
+pub struct GpuMeshHandle(pub(crate) usize);
+
 #[derive(Default, Clone)]
 pub struct CpuMesh {
     pub vertices: Vec<Vertex>,
