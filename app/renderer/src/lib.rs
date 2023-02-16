@@ -756,8 +756,8 @@ impl Renderer {
         let pixel_data = image
             .pixels()
             // Convert RGB -> BGRA
-            .map(|p| [p.0[2], p.0[1], p.0[0], 0xFF].into_iter())
-            .collect::<Vec<_>>();
+            .flat_map(|p| [p.0[2], p.0[1], p.0[0], 0xFF].into_iter())
+            .collect::<Vec<u8>>();
         scratch.allocation.write_mapped(&pixel_data)?;
 
         cx.device.cmd_copy_buffer_to_image(
