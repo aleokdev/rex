@@ -1,3 +1,7 @@
+mod mem_type;
+
+pub use self::mem_type::{MemoryBlock, MemoryType, MemoryTypeAllocation};
+
 use super::{
     buffer::{Buffer, BufferSlice},
     image::GpuImage,
@@ -7,7 +11,6 @@ use ash::vk::{self, Handle};
 use nonzero_ext::{nonzero, NonZeroAble};
 use space_alloc::{
     linear::LinearAllocation, BuddyAllocation, BuddyAllocator, Deallocator, LinearAllocator,
-    OutOfMemory,
 };
 use std::ffi::CStr;
 use std::{collections::HashMap, ffi::c_void, num::NonZeroU64};
@@ -19,141 +22,10 @@ const HOST_BLOCK_SIZE: NonZeroU64 = nonzero!(64 * 1024 * 1024u64);
 /// 1 KiB
 const MIN_ALLOC_SIZE: u64 = 1024u64;
 
-#[derive(Debug)]
-struct MemoryBlock<Allocator: space_alloc::Allocator> {
-    raw: vk::DeviceMemory,
-    allocator: Allocator,
-    mapped: *mut c_void,
-}
-
-impl<Allocator: space_alloc::Allocator> MemoryBlock<Allocator> {
-    pub unsafe fn name(
-        &self,
-        device: vk::Device,
-        utils: &DebugUtils,
-        name: &CStr,
-    ) -> anyhow::Result<()> {
-        utils.debug_utils_set_object_name(
-            device,
-            &vk::DebugUtilsObjectNameInfoEXT::builder()
-                .object_handle(self.raw.as_raw())
-                .object_name(name)
-                .object_type(vk::ObjectType::DEVICE_MEMORY),
-        )?;
-        Ok(())
-    }
-}
-
-struct MemoryType<Allocator: space_alloc::Allocator> {
-    memory_blocks: Vec<MemoryBlock<Allocator>>,
-    memory_props: vk::MemoryPropertyFlags,
-    memory_type_index: u32,
-    block_size: NonZeroU64,
-    min_alloc_size: u64,
-    /// Whether to map the blocks allocated in the memory type into application address space or not.
-    mapped: bool,
-}
-
-struct MemoryTypeAllocation<Allocation: space_alloc::Allocation> {
-    /// The [vk::DeviceMemory] of the block this allocation was obtained from.
-    block_memory: vk::DeviceMemory,
-    mapped: *mut c_void,
-    block_index: usize,
-    allocation: Allocation,
-}
-
-impl<Allocator: space_alloc::Allocator> MemoryType<Allocator> {
-    pub unsafe fn allocate_block(&mut self, device: &ash::Device) -> anyhow::Result<()> {
-        let memory = device.allocate_memory(
-            &vk::MemoryAllocateInfo::builder()
-                .allocation_size(self.block_size.get())
-                .memory_type_index(self.memory_type_index as u32),
-            None,
-        )?;
-
-        let mapped = if self.mapped {
-            device.map_memory(
-                memory,
-                0,
-                self.block_size.get(),
-                vk::MemoryMapFlags::empty(),
-            )?
-        } else {
-            std::ptr::null_mut()
-        };
-
-        self.memory_blocks.push(MemoryBlock {
-            raw: memory,
-            allocator: Allocator::from_properties(self.min_alloc_size, self.block_size),
-            mapped,
-        });
-
-        Ok(())
-    }
-
-    pub unsafe fn allocate(
-        &mut self,
-        device: &ash::Device,
-        size: NonZeroU64,
-        alignment: NonZeroU64,
-    ) -> anyhow::Result<MemoryTypeAllocation<Allocator::Allocation>> {
-        use space_alloc::Allocation;
-
-        assert!(
-            size <= self.block_size,
-            "[MemoryType]: tried to allocate space of {}B ({}MiB) which cannot fit in [MemoryBlock]s of size {}B ({}MiB)",
-            size,
-            size.get() / 1024 / 1024,
-            self.block_size,
-            self.block_size.get() / 1024 / 1024,
-        );
-
-        // We iterate through all our blocks until we find one that isn't out of memory, then
-        // allocate there.
-        for (i, block) in self.memory_blocks.iter_mut().enumerate() {
-            match block.allocator.allocate(size, alignment) {
-                Ok(allocation) => {
-                    return Ok(MemoryTypeAllocation {
-                        block_memory: block.raw,
-                        mapped: block.mapped.add(allocation.offset() as usize),
-                        allocation,
-                        block_index: i,
-                    });
-                }
-                Err(OutOfMemory) => {}
-            }
-        }
-        // If we don't have blocks with free memory left, we allocate a new one and return an allocation from there.
-        self.allocate_block(device)?;
-        // SAFETY: We have successfully pushed a MemoryBlock in allocate_block. [self.memory_blocks] cannot be empty.
-        let block = self.memory_blocks.last_mut().unwrap_unchecked();
-        let allocation = block
-            .allocator
-            .allocate(size, alignment)
-            .unwrap_or_else(|_| {
-                panic!(
-                    "[MemoryType]: could not allocate on newly created memory block: \
-            there is most likely a bug in the space_alloc crate \
-            (alloc size: {}, alloc alignment: {}, block size: {})",
-                    size, alignment, self.block_size
-                )
-            });
-
-        Ok(MemoryTypeAllocation {
-            block_memory: block.raw,
-            mapped: block.mapped.add(allocation.offset() as usize),
-            allocation,
-            block_index: self.memory_blocks.len() - 1,
-        })
-    }
-
-    pub unsafe fn destroy(self, device: &ash::Device) {
-        self.memory_blocks
-            .into_iter()
-            .for_each(|block| device.free_memory(block.raw, None));
-    }
-}
-
+/// Acts as the main allocation point for GPU memory.
+///
+/// Internally, the memory is divided into [`MemoryType`]s which support specific properties, and those are then divided
+/// into [`MemoryBlock`]s which are again divided into [`MemoryTypeAllocation`]s.
 pub struct GpuMemory {
     device: ash::Device,
     memory_props: vk::PhysicalDeviceMemoryProperties,
