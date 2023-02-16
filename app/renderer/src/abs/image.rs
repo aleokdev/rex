@@ -43,4 +43,5 @@ impl GpuTexture {
     }
 }
 
-pub struct GpuImageHandle(pub(crate) usize);
+#[derive(Clone, Copy)]
+pub struct GpuTextureHandle(pub(crate) usize);

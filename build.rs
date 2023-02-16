@@ -1,8 +1,9 @@
 use std::path::Path;
 
 fn main() -> std::io::Result<()> {
-    println!("cargo:rerun-if-changed=app/res/basic.frag");
+    println!("cargo:rerun-if-changed=app/res/flat.frag");
     println!("cargo:rerun-if-changed=app/res/basic.vert");
+    println!("cargo:rerun-if-changed=app/res/textured.vert");
 
     let shader_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("app/res");
     let mut shader_compiler = std::process::Command::new("sh")

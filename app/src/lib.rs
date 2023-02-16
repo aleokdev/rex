@@ -67,6 +67,8 @@ impl App {
             .0
             .into_iter(),
         );
+
+        let texture = renderer.upload_image(image::open("app/res/unknown.png")?.into_rgb8());
         for model in models {
             let mut mesh = model.mesh;
             if mesh.vertex_color.is_empty() {
@@ -93,6 +95,7 @@ impl App {
             let indices = mesh.indices;
             render_data.objects.push(renderer::RenderObject {
                 mesh_handle: renderer.upload_mesh(CpuMesh { vertices, indices }),
+                material: renderer::Material::TexturedLit { texture },
             });
         }
 
@@ -102,6 +105,7 @@ impl App {
                 render_data.objects.push(renderer::RenderObject {
                     mesh_handle: renderer
                         .upload_mesh(meshgen::generate_room_mesh(&database, room_id)),
+                    material: renderer::Material::FlatLit,
                 });
                 room_meshes_uploaded.insert(room_id);
                 if room_id % 100 == 0 {
@@ -111,11 +115,10 @@ impl App {
         } else {
             render_data.objects.push(renderer::RenderObject {
                 mesh_handle: renderer.upload_mesh(meshgen::generate_room_mesh(&database, 0)),
+                material: renderer::Material::FlatLit,
             });
             room_meshes_uploaded.insert(0);
         }
-
-        renderer.upload_image(image::open("app/res/unknown.png")?.into_rgb8());
 
         Ok(App {
             cx,
@@ -267,6 +270,7 @@ pub fn run(width: u32, height: u32) -> anyhow::Result<()> {
                             mesh_handle: app
                                 .renderer
                                 .upload_mesh(meshgen::generate_room_mesh(&app.database, room_id)),
+                            material: renderer::Material::FlatLit,
                         });
                         app.room_meshes_uploaded.insert(room_id);
                     }

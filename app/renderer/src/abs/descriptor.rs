@@ -7,7 +7,7 @@ use super::Cx;
 // credit vblanco
 
 /// An utility structure used to manage descriptor pools, allowing allocating descriptor sets with
-/// ease without having to worry too much about resetting and freeing full descriptor pools.
+/// ease and reusing them when they have finished being used.
 pub struct DescriptorAllocator {
     device: ash::Device,
     current_pool: vk::DescriptorPool,
@@ -30,15 +30,16 @@ impl DescriptorAllocator {
         (vk::DescriptorType::INPUT_ATTACHMENT, 0.5),
     ];
 
-    pub fn new(cx: &mut Cx) -> Self {
+    pub fn new(device: ash::Device) -> Self {
         DescriptorAllocator {
-            device: cx.device.clone(),
+            device,
             current_pool: vk::DescriptorPool::null(),
             free_pools: vec![],
             used_pools: vec![],
         }
     }
 
+    /// Resets all used descriptor pools and makes them available for use again.
     pub unsafe fn reset(&mut self) -> anyhow::Result<()> {
         for pool in &self.used_pools {
             self.device
@@ -49,6 +50,7 @@ impl DescriptorAllocator {
         Ok(())
     }
 
+    /// Allocates a descriptor set with the layout given.
     pub unsafe fn allocate(
         &mut self,
         layout: vk::DescriptorSetLayout,
@@ -66,6 +68,9 @@ impl DescriptorAllocator {
         match self.device.allocate_descriptor_sets(&alloc) {
             Ok(sets) => return Ok(sets[0]),
             Err(e) => match e {
+                // If the current pool is too fragmented or doesn't have space for this descriptor set,
+                // acquire a new pool, put the full pool in the used pools list and return a descriptor set allocated
+                // from the new pool
                 vk::Result::ERROR_FRAGMENTED_POOL | vk::Result::ERROR_OUT_OF_POOL_MEMORY => {
                     self.current_pool = self.acquire_pool()?;
                     self.used_pools.push(self.current_pool);
@@ -77,14 +82,16 @@ impl DescriptorAllocator {
         }
     }
 
+    /// Returns a free pool from the free pools vector or creates a new one if no free pools exist.
     unsafe fn acquire_pool(&mut self) -> anyhow::Result<vk::DescriptorPool> {
         if let Some(pool) = self.free_pools.pop() {
             Ok(pool)
         } else {
-            Ok(Self::create_pool(&self.device, 1000, Default::default())?)
+            Self::create_pool(&self.device, 1000, Default::default())
         }
     }
 
+    /// Creates a new descriptor pool with capacity for `n` descriptor sets.
     unsafe fn create_pool(
         device: &ash::Device,
         n: u32,

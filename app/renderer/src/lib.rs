@@ -1,10 +1,12 @@
 pub mod abs;
 mod camera;
 mod data;
+mod material;
 mod object;
 
 pub use camera::Camera;
 pub use data::RenderData;
+pub use material::Material;
 pub use object::RenderObject;
 
 use std::{collections::VecDeque, ffi::CStr, num::NonZeroU64};
@@ -16,7 +18,8 @@ use crate::abs::{
 };
 
 use abs::{
-    image::{GpuImageHandle, GpuTexture},
+    descriptor::DescriptorAllocator,
+    image::{GpuTexture, GpuTextureHandle},
     memory::GpuMemory,
     mesh::{CpuMesh, GpuIndex, GpuMeshHandle, Vertex},
 };
@@ -33,6 +36,7 @@ pub struct Frame {
     pub cmd: vk::CommandBuffer,
     pub allocator: abs::memory::GpuMemory,
     pub deletion: Vec<Box<dyn FnOnce(&mut abs::Cx)>>,
+    pub ds_allocator: abs::descriptor::DescriptorAllocator,
 
     pub counter: u64,
 }
@@ -71,6 +75,7 @@ impl Frame {
             cmd,
             allocator: abs::memory::GpuMemory::new(&cx.device, &cx.instance, cx.physical_device)?,
             deletion: vec![],
+            ds_allocator: DescriptorAllocator::new(cx.device.clone()),
 
             counter: 0,
         })
@@ -86,8 +91,11 @@ pub struct Renderer {
     pub vertex_shader: vk::ShaderModule,
     pub fragment_shader: vk::ShaderModule,
     pub wireframe_pipeline: vk::Pipeline,
-    pub fill_pipeline: vk::Pipeline,
-    pub pipeline_layout: vk::PipelineLayout,
+    pub wireframe_pipeline_layout: vk::PipelineLayout,
+    pub flat_lit_pipeline: vk::Pipeline,
+    pub flat_lit_pipeline_layout: vk::PipelineLayout,
+    pub textured_lit_pipeline: vk::Pipeline,
+    pub textured_lit_pipeline_layout: vk::PipelineLayout,
 
     wireframe: bool,
 
@@ -97,13 +105,15 @@ pub struct Renderer {
     meshes_to_upload: VecDeque<abs::mesh::CpuMesh>,
     // It is important that the `meshes_to_upload` order is respected, as mesh handles' internal ID depend on it!
     meshes: Vec<abs::mesh::GpuMesh>,
+    // Same with `images_to_upload`!
     images_to_upload: VecDeque<image::RgbImage>,
     textures: Vec<abs::image::GpuTexture>,
     pub world_uniform: abs::buffer::BufferSlice<BuddyAllocation>,
     pub world_uniform_set: vk::DescriptorSet,
     pub model_uniform: abs::buffer::BufferSlice<BuddyAllocation>,
     pub model_uniform_set: vk::DescriptorSet,
-    pub texture_uniform_set: vk::DescriptorSet,
+
+    pub texture_uniform_set_layout: vk::DescriptorSetLayout,
     pub sampler: vk::Sampler,
 
     pub model_rotation: f32,
@@ -116,7 +126,7 @@ impl Renderer {
     const FRAME_OVERLAP: usize = 2;
 
     pub unsafe fn new(cx: &mut abs::Cx) -> anyhow::Result<Self> {
-        let mut ds_allocator = abs::descriptor::DescriptorAllocator::new(cx);
+        let mut ds_allocator = abs::descriptor::DescriptorAllocator::new(cx.device.clone());
         let mut ds_layout_cache = abs::descriptor::DescriptorLayoutCache::new(cx);
 
         let mut arenas = Arenas::new(
@@ -178,24 +188,6 @@ impl Renderer {
             cx.height,
         )?;
 
-        let vertex_shader =
-            ShaderModule::from_spirv_bytes(include_bytes!("../../res/basic.vert.spv"), &cx.device)?
-                .name(
-                    cx.device.handle(),
-                    &cx.debug_utils_loader,
-                    cstr::cstr!("Basic Vertex shader"),
-                )?
-                .0;
-
-        let fragment_shader =
-            ShaderModule::from_spirv_bytes(include_bytes!("../../res/basic.frag.spv"), &cx.device)?
-                .name(
-                    cx.device.handle(),
-                    &cx.debug_utils_loader,
-                    cstr::cstr!("Basic Fragment shader"),
-                )?
-                .0;
-
         let world_uniform = arenas.uniform.suballocate(
             &mut cx.memory,
             cx.device.handle(),
@@ -252,19 +244,22 @@ impl Renderer {
             .min_filter(vk::Filter::LINEAR);
         let sampler = cx.device.create_sampler(&sampler_info, None)?;
 
-        let (texture_uniform_set, texture_uniform_set_layout) =
-            abs::descriptor::DescriptorBuilder::new()
-                .bind_image(
-                    0,
-                    &[*vk::DescriptorImageInfo::builder()
-                        .sampler(sampler)
-                        .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)],
-                    vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
-                    vk::ShaderStageFlags::FRAGMENT,
-                )
-                .build(cx, &mut ds_allocator, &mut ds_layout_cache)?;
+        let texture_uniform_set_layout = ds_layout_cache.create_descriptor_layout(
+            &vk::DescriptorSetLayoutCreateInfo::builder().bindings(&[
+                *vk::DescriptorSetLayoutBinding::builder()
+                    .binding(0)
+                    .descriptor_count(1)
+                    .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                    .stage_flags(vk::ShaderStageFlags::FRAGMENT),
+            ]),
+        );
 
-        let pipeline_layout = cx.device.create_pipeline_layout(
+        let flat_pipeline_layout = cx.device.create_pipeline_layout(
+            &vk::PipelineLayoutCreateInfo::builder()
+                .set_layouts(&[world_uniform_set_layout, model_uniform_set_layout]),
+            None,
+        )?;
+        let textured_pipeline_layout = cx.device.create_pipeline_layout(
             &vk::PipelineLayoutCreateInfo::builder().set_layouts(&[
                 world_uniform_set_layout,
                 model_uniform_set_layout,
@@ -273,8 +268,37 @@ impl Renderer {
             None,
         )?;
 
+        let vertex_shader =
+            ShaderModule::from_spirv_bytes(include_bytes!("../../res/basic.vert.spv"), &cx.device)?
+                .name(
+                    cx.device.handle(),
+                    &cx.debug_utils_loader,
+                    cstr::cstr!("Basic Vertex shader"),
+                )?
+                .0;
+
+        let flat_fragment_shader =
+            ShaderModule::from_spirv_bytes(include_bytes!("../../res/flat.frag.spv"), &cx.device)?
+                .name(
+                    cx.device.handle(),
+                    &cx.debug_utils_loader,
+                    cstr::cstr!("Basic Fragment shader"),
+                )?
+                .0;
+
+        let textured_fragment_shader = ShaderModule::from_spirv_bytes(
+            include_bytes!("../../res/textured.frag.spv"),
+            &cx.device,
+        )?
+        .name(
+            cx.device.handle(),
+            &cx.debug_utils_loader,
+            cstr::cstr!("Textured Fragment shader"),
+        )?
+        .0;
+
         const ENTRY_POINT: &CStr = cstr::cstr!("main");
-        let stages = &[
+        let flat_stages = &[
             vk::PipelineShaderStageCreateInfo::builder()
                 .stage(vk::ShaderStageFlags::VERTEX)
                 .module(vertex_shader)
@@ -282,13 +306,29 @@ impl Renderer {
                 .build(),
             vk::PipelineShaderStageCreateInfo::builder()
                 .stage(vk::ShaderStageFlags::FRAGMENT)
-                .module(fragment_shader)
+                .module(flat_fragment_shader)
+                .name(ENTRY_POINT)
+                .build(),
+        ];
+        let textured_stages = &[
+            vk::PipelineShaderStageCreateInfo::builder()
+                .stage(vk::ShaderStageFlags::VERTEX)
+                .module(vertex_shader)
+                .name(ENTRY_POINT)
+                .build(),
+            vk::PipelineShaderStageCreateInfo::builder()
+                .stage(vk::ShaderStageFlags::FRAGMENT)
+                .module(textured_fragment_shader)
                 .name(ENTRY_POINT)
                 .build(),
         ];
 
-        let wireframe_pipeline = create_pipeline(cx, stages, pass, pipeline_layout, true)?;
-        let fill_pipeline = create_pipeline(cx, stages, pass, pipeline_layout, false)?;
+        let wireframe_pipeline =
+            create_pipeline(cx, flat_stages, pass, flat_pipeline_layout, true)?;
+        let flat_lit_pipeline =
+            create_pipeline(cx, flat_stages, pass, flat_pipeline_layout, false)?;
+        let textured_lit_pipeline =
+            create_pipeline(cx, textured_stages, pass, textured_pipeline_layout, false)?;
 
         Ok(Renderer {
             ds_allocator,
@@ -297,10 +337,13 @@ impl Renderer {
             frame: 0,
 
             vertex_shader,
-            fragment_shader,
+            fragment_shader: flat_fragment_shader,
             wireframe_pipeline,
-            fill_pipeline,
-            pipeline_layout,
+            wireframe_pipeline_layout: flat_pipeline_layout,
+            flat_lit_pipeline,
+            flat_lit_pipeline_layout: flat_pipeline_layout,
+            textured_lit_pipeline,
+            textured_lit_pipeline_layout: textured_pipeline_layout,
 
             wireframe: false,
 
@@ -315,7 +358,7 @@ impl Renderer {
             world_uniform_set,
             model_uniform,
             model_uniform_set,
-            texture_uniform_set,
+            texture_uniform_set_layout,
 
             sampler,
 
@@ -394,6 +437,9 @@ impl Renderer {
             std::time::Duration::from_secs(1).as_nanos() as u64,
         )?;
 
+        // Reset the descriptor set allocator, as all of its used descriptor sets are not being used now.
+        frame.ds_allocator.reset()?;
+
         // Reset the render fence:
         //      We have already waited for it, so we reset it preparing it for this next upload
         cx.device.reset_fences(&[frame.render_fence])?;
@@ -466,14 +512,7 @@ impl Renderer {
             }
         }
         if let Some(img) = self.images_to_upload.pop_front() {
-            match Self::setup_image(
-                cx,
-                &mut self.arenas,
-                &mut frame,
-                &img,
-                self.sampler,
-                self.texture_uniform_set,
-            ) {
+            match Self::setup_image(cx, &mut self.arenas, &mut frame, &img) {
                 Ok(texture) => {
                     self.textures.push(texture);
                 }
@@ -562,34 +601,76 @@ impl Renderer {
             ash::vk::SubpassContents::INLINE,
         );
 
-        // Bind our pipeline:
-        //      We tell the GPU to configure its layout for what's coming...
-        cx.device.cmd_bind_pipeline(
-            frame.cmd,
-            ash::vk::PipelineBindPoint::GRAPHICS,
-            if self.wireframe {
-                self.wireframe_pipeline
-            } else {
-                self.fill_pipeline
-            },
-        );
-
-        // Bind the camera & model uniform descriptor sets and cube vertex/index buffers.
-        cx.device.cmd_bind_descriptor_sets(
-            frame.cmd,
-            vk::PipelineBindPoint::GRAPHICS,
-            self.pipeline_layout,
-            0,
-            &[
-                self.world_uniform_set,
-                self.model_uniform_set,
-                self.texture_uniform_set,
-            ],
-            &[],
-        );
-
         for object in data.objects.iter() {
             let Some(mesh) = self.meshes.get(object.mesh_handle.0) else { continue};
+
+            match &object.material {
+                Material::FlatLit => {
+                    // Bind our pipeline:
+                    //      We tell the GPU to configure its layout for what's coming...
+                    cx.device.cmd_bind_pipeline(
+                        frame.cmd,
+                        ash::vk::PipelineBindPoint::GRAPHICS,
+                        if self.wireframe {
+                            self.wireframe_pipeline
+                        } else {
+                            self.flat_lit_pipeline
+                        },
+                    );
+
+                    cx.device.cmd_bind_descriptor_sets(
+                        frame.cmd,
+                        vk::PipelineBindPoint::GRAPHICS,
+                        self.flat_lit_pipeline_layout,
+                        0,
+                        &[self.world_uniform_set, self.model_uniform_set],
+                        &[],
+                    );
+                }
+                Material::TexturedLit { texture } => {
+                    let Some(texture) = self.textures.get(texture.0) else{ continue;};
+                    // Bind our pipeline:
+                    //      We tell the GPU to configure its layout for what's coming...
+                    cx.device.cmd_bind_pipeline(
+                        frame.cmd,
+                        ash::vk::PipelineBindPoint::GRAPHICS,
+                        if self.wireframe {
+                            self.wireframe_pipeline
+                        } else {
+                            self.textured_lit_pipeline
+                        },
+                    );
+
+                    let texture_uniform_set = frame
+                        .ds_allocator
+                        .allocate(self.texture_uniform_set_layout)?;
+                    cx.device.update_descriptor_sets(
+                        &[*vk::WriteDescriptorSet::builder()
+                            .dst_binding(0)
+                            .dst_set(texture_uniform_set)
+                            .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                            .image_info(&[*vk::DescriptorImageInfo::builder()
+                                .image_view(texture.view)
+                                .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+                                .sampler(self.sampler)])],
+                        &[],
+                    );
+
+                    cx.device.cmd_bind_descriptor_sets(
+                        frame.cmd,
+                        vk::PipelineBindPoint::GRAPHICS,
+                        self.textured_lit_pipeline_layout,
+                        0,
+                        &[
+                            self.world_uniform_set,
+                            self.model_uniform_set,
+                            texture_uniform_set,
+                        ],
+                        &[],
+                    );
+                }
+            }
+
             cx.device.cmd_bind_index_buffer(
                 frame.cmd,
                 mesh.indices.buffer.raw,
@@ -703,8 +784,6 @@ impl Renderer {
         arenas: &mut Arenas,
         frame: &mut Frame,
         image: &image::RgbImage,
-        sampler: vk::Sampler,
-        desc: vk::DescriptorSet,
     ) -> anyhow::Result<abs::image::GpuTexture> {
         let extent = vk::Extent3D {
             width: image.width(),
@@ -805,20 +884,6 @@ impl Renderer {
             None,
         )?;
 
-        // HACK
-        let img_info = &[*vk::DescriptorImageInfo::builder()
-            .sampler(sampler)
-            .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
-            .image_view(view)];
-        cx.device.update_descriptor_sets(
-            &[*vk::WriteDescriptorSet::builder()
-                .dst_binding(0)
-                .dst_set(desc)
-                .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-                .image_info(img_info)],
-            &[],
-        );
-
         Ok(GpuTexture {
             image: gpu_img,
             view,
@@ -834,9 +899,9 @@ impl Renderer {
 
     #[must_use = "uploading an image does not automatically show it on screen, you must use the handle on an object \
     for it to be useful"]
-    pub fn upload_image(&mut self, image: image::RgbImage) -> GpuImageHandle {
+    pub fn upload_image(&mut self, image: image::RgbImage) -> GpuTextureHandle {
         self.images_to_upload.push_back(image);
-        GpuImageHandle(self.images_to_upload.len() + self.textures.len() - 1)
+        GpuTextureHandle(self.images_to_upload.len() + self.textures.len() - 1)
     }
 
     pub unsafe fn destroy(mut self, cx: &mut abs::Cx) -> anyhow::Result<()> {
@@ -855,6 +920,7 @@ impl Renderer {
                 .unwrap();
             cx.device.destroy_command_pool(frame.cmd_pool, None);
 
+            drop(frame.ds_allocator);
             drop(frame.allocator);
         });
         for texture in self.textures {
@@ -864,10 +930,14 @@ impl Renderer {
         self.arenas.destroy(&cx.device, &mut cx.memory)?;
         drop(self.ds_layout_cache);
         drop(self.ds_allocator);
+        cx.device.destroy_sampler(self.sampler, None);
         cx.device
-            .destroy_pipeline_layout(self.pipeline_layout, None);
+            .destroy_pipeline_layout(self.textured_lit_pipeline_layout, None);
+        cx.device.destroy_pipeline(self.textured_lit_pipeline, None);
+        cx.device
+            .destroy_pipeline_layout(self.flat_lit_pipeline_layout, None);
         cx.device.destroy_pipeline(self.wireframe_pipeline, None);
-        cx.device.destroy_pipeline(self.fill_pipeline, None);
+        cx.device.destroy_pipeline(self.flat_lit_pipeline, None);
         cx.device.destroy_shader_module(self.vertex_shader, None);
         cx.device.destroy_shader_module(self.fragment_shader, None);
         cx.device.destroy_render_pass(self.pass, None);
