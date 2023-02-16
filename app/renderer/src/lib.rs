@@ -641,6 +641,8 @@ impl Renderer {
                         },
                     );
 
+                    // FIXME: This is allocating one set per frame, but this is not needed. Sets can be updated as long
+                    // as the command buffer they are bound to is not being recorded or on the executable state.
                     let texture_uniform_set = frame
                         .ds_allocator
                         .allocate(self.texture_uniform_set_layout)?;
