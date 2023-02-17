@@ -1,12 +1,14 @@
 pub mod abs;
 mod camera;
 mod data;
+mod device;
 mod frame;
 mod material;
 mod object;
 
 pub use camera::Camera;
 pub use data::RenderData;
+pub(crate) use device::*;
 use frame::Frame;
 pub use material::Material;
 pub use object::RenderObject;
