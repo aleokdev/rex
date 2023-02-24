@@ -1,6 +1,6 @@
 mod debug_callback;
 
-use crate::device::{set_device, set_memory};
+use crate::device::{get_device, get_memory, set_device, set_memory};
 
 use super::{
     image::{GpuImage, GpuTexture},
@@ -33,7 +33,7 @@ impl SwapchainTextures {
     pub unsafe fn destroy(
         &mut self,
         device: &ash::Device,
-        memory: &mut GpuMemory,
+        memory: &GpuMemory,
     ) -> anyhow::Result<()> {
         self.0.drain(..).try_for_each(|img| {
             device.destroy_image_view(img.color.view, None);
@@ -57,12 +57,9 @@ pub struct Cx {
     pub surface: vk::SurfaceKHR,
     pub surface_format: vk::SurfaceFormatKHR,
     pub physical_device: vk::PhysicalDevice,
-    pub device: ash::Device,
     pub swapchain_loader: Swapchain,
     pub swapchain: vk::SwapchainKHR,
     pub swapchain_images: SwapchainTextures,
-
-    pub memory: super::memory::GpuMemory,
 
     /// The queue used for rendering along with its index.
     pub render_queue: (vk::Queue, u32),
@@ -217,7 +214,7 @@ impl Cx {
             images: swapchain_images,
         } = Self::create_swapchain(
             &device,
-            &mut memory,
+            &memory,
             surface_format,
             &surface_loader,
             physical_device,
@@ -227,6 +224,9 @@ impl Cx {
             height,
             vk::SwapchainKHR::null(),
         )?;
+
+        set_device(device);
+        set_memory(memory);
 
         Ok(Cx {
             window,
@@ -241,11 +241,8 @@ impl Cx {
             surface,
             surface_format,
             physical_device,
-            device,
             swapchain,
             swapchain_images,
-
-            memory,
 
             render_queue: queue,
         })
@@ -253,8 +250,8 @@ impl Cx {
 
     pub unsafe fn recreate_swapchain(&mut self, width: u32, height: u32) -> anyhow::Result<()> {
         let SwapchainData { swapchain, images } = Self::create_swapchain(
-            &self.device,
-            &mut self.memory,
+            &*get_device(),
+            &*get_memory(),
             self.surface_format,
             &self.surface_loader,
             self.physical_device,
@@ -268,9 +265,9 @@ impl Cx {
         let old_swapchain = std::mem::replace(&mut self.swapchain, swapchain);
         let mut old_swapchain_images = std::mem::replace(&mut self.swapchain_images, images);
 
-        self.device.device_wait_idle()?;
+        get_device().device_wait_idle()?;
 
-        old_swapchain_images.destroy(&self.device, &mut self.memory)?;
+        old_swapchain_images.destroy(&*get_device(), &*get_memory())?;
         self.swapchain_loader.destroy_swapchain(old_swapchain, None);
 
         self.width = width;
@@ -281,7 +278,7 @@ impl Cx {
 
     unsafe fn create_swapchain(
         device: &ash::Device,
-        memory: &mut memory::GpuMemory,
+        memory: &GpuMemory,
         surface_format: vk::SurfaceFormatKHR,
         surface_loader: &ash::extensions::khr::Surface,
         physical_device: vk::PhysicalDevice,
@@ -417,14 +414,16 @@ impl Cx {
 impl Drop for Cx {
     fn drop(&mut self) {
         unsafe {
-            self.device.device_wait_idle().unwrap();
+            let device = get_device();
+            let memory = get_memory();
+            device.device_wait_idle().unwrap();
             self.swapchain_loader
                 .destroy_swapchain(self.swapchain, None);
             self.swapchain_images
-                .destroy(&self.device, &mut self.memory)
+                .destroy(&device, &*get_memory())
                 .unwrap();
             self.surface_loader.destroy_surface(self.surface, None);
-            self.device.destroy_device(None);
+            device.destroy_device(None);
             self.debug_utils_loader
                 .destroy_debug_utils_messenger(self.debug_callback, None);
             self.instance.destroy_instance(None);

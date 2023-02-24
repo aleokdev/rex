@@ -8,7 +8,7 @@ mod object;
 
 pub use camera::Camera;
 pub use data::RenderData;
-pub(crate) use device::*;
+pub use device::*;
 use frame::Frame;
 pub use material::Material;
 pub use object::RenderObject;
@@ -74,8 +74,11 @@ impl Renderer {
     const FRAME_OVERLAP: usize = 2;
 
     pub unsafe fn new(cx: &mut abs::Cx) -> anyhow::Result<Self> {
-        let mut ds_allocator = abs::descriptor::DescriptorAllocator::new(cx.device.clone());
-        let mut ds_layout_cache = abs::descriptor::DescriptorLayoutCache::new(cx);
+        let device = get_device();
+        let memory = get_memory();
+
+        let mut ds_allocator = abs::descriptor::DescriptorAllocator::new(device.clone());
+        let mut ds_layout_cache = abs::descriptor::DescriptorLayoutCache::new();
 
         let mut arenas = Arenas::new(
             &cx.instance
@@ -126,19 +129,14 @@ impl Renderer {
         let renderpass_info = vk::RenderPassCreateInfo::builder()
             .attachments(attachments)
             .subpasses(subpasses);
-        let pass = cx.device.create_render_pass(&renderpass_info, None)?;
+        let pass = device.create_render_pass(&renderpass_info, None)?;
 
-        let framebuffers: Vec<vk::Framebuffer> = Self::create_swapchain_framebuffers(
-            &cx.device,
-            &cx.swapchain_images,
-            pass,
-            cx.width,
-            cx.height,
-        )?;
+        let framebuffers: Vec<vk::Framebuffer> =
+            Self::create_swapchain_framebuffers(&cx.swapchain_images, pass, cx.width, cx.height)?;
 
         let world_uniform = arenas.uniform.suballocate(
-            &mut cx.memory,
-            cx.device.handle(),
+            &*get_memory(),
+            device.handle(),
             &cx.debug_utils_loader,
             (std::mem::size_of::<WorldUniform>() as u64)
                 .into_nonzero()
@@ -146,8 +144,8 @@ impl Renderer {
         )?;
 
         let model_uniform = arenas.uniform.suballocate(
-            &mut cx.memory,
-            cx.device.handle(),
+            &*memory,
+            device.handle(),
             &cx.debug_utils_loader,
             (std::mem::size_of::<ModelUniform>() as u64)
                 .into_nonzero()
@@ -190,7 +188,7 @@ impl Renderer {
             .compare_enable(false)
             .mag_filter(vk::Filter::LINEAR)
             .min_filter(vk::Filter::LINEAR);
-        let sampler = cx.device.create_sampler(&sampler_info, None)?;
+        let sampler = device.create_sampler(&sampler_info, None)?;
 
         let texture_uniform_set_layout = ds_layout_cache.create_descriptor_layout(
             &vk::DescriptorSetLayoutCreateInfo::builder().bindings(&[
@@ -202,12 +200,12 @@ impl Renderer {
             ]),
         );
 
-        let flat_pipeline_layout = cx.device.create_pipeline_layout(
+        let flat_pipeline_layout = device.create_pipeline_layout(
             &vk::PipelineLayoutCreateInfo::builder()
                 .set_layouts(&[world_uniform_set_layout, model_uniform_set_layout]),
             None,
         )?;
-        let textured_pipeline_layout = cx.device.create_pipeline_layout(
+        let textured_pipeline_layout = device.create_pipeline_layout(
             &vk::PipelineLayoutCreateInfo::builder().set_layouts(&[
                 world_uniform_set_layout,
                 model_uniform_set_layout,
@@ -217,33 +215,31 @@ impl Renderer {
         )?;
 
         let vertex_shader =
-            ShaderModule::from_spirv_bytes(include_bytes!("../../res/basic.vert.spv"), &cx.device)?
+            ShaderModule::from_spirv_bytes(include_bytes!("../../res/basic.vert.spv"), &device)?
                 .name(
-                    cx.device.handle(),
+                    device.handle(),
                     &cx.debug_utils_loader,
                     cstr::cstr!("Basic Vertex shader"),
                 )?
                 .0;
 
         let flat_fragment_shader =
-            ShaderModule::from_spirv_bytes(include_bytes!("../../res/flat.frag.spv"), &cx.device)?
+            ShaderModule::from_spirv_bytes(include_bytes!("../../res/flat.frag.spv"), &device)?
                 .name(
-                    cx.device.handle(),
+                    device.handle(),
                     &cx.debug_utils_loader,
                     cstr::cstr!("Basic Fragment shader"),
                 )?
                 .0;
 
-        let textured_fragment_shader = ShaderModule::from_spirv_bytes(
-            include_bytes!("../../res/textured.frag.spv"),
-            &cx.device,
-        )?
-        .name(
-            cx.device.handle(),
-            &cx.debug_utils_loader,
-            cstr::cstr!("Textured Fragment shader"),
-        )?
-        .0;
+        let textured_fragment_shader =
+            ShaderModule::from_spirv_bytes(include_bytes!("../../res/textured.frag.spv"), &device)?
+                .name(
+                    device.handle(),
+                    &cx.debug_utils_loader,
+                    cstr::cstr!("Textured Fragment shader"),
+                )?
+                .0;
 
         const ENTRY_POINT: &CStr = cstr::cstr!("main");
         let flat_stages = &[
@@ -320,26 +316,21 @@ impl Renderer {
     pub unsafe fn resize(&mut self, cx: &abs::Cx, width: u32, height: u32) -> anyhow::Result<()> {
         self.framebuffers
             .iter()
-            .for_each(|&fb| cx.device.destroy_framebuffer(fb, None));
+            .for_each(|&fb| get_device().destroy_framebuffer(fb, None));
 
-        self.framebuffers = Self::create_swapchain_framebuffers(
-            &cx.device,
-            &cx.swapchain_images,
-            self.pass,
-            width,
-            height,
-        )?;
+        self.framebuffers =
+            Self::create_swapchain_framebuffers(&cx.swapchain_images, self.pass, width, height)?;
 
         Ok(())
     }
 
     unsafe fn create_swapchain_framebuffers(
-        device: &ash::Device,
         swapchain_images: &abs::cx::SwapchainTextures,
         renderpass: vk::RenderPass,
         width: u32,
         height: u32,
     ) -> ash::prelude::VkResult<Vec<vk::Framebuffer>> {
+        let device = get_device();
         swapchain_images
             .0
             .iter()
@@ -363,6 +354,7 @@ impl Renderer {
         data: &RenderData,
         _delta: std::time::Duration,
     ) -> anyhow::Result<()> {
+        let device = get_device();
         // Get the next frame to draw onto:
         //      We have a few in-flight frames so the GPU doesn't stay still (And we don't need to
         //      wait too much CPU-side for queue submissions to happen).
@@ -379,7 +371,7 @@ impl Renderer {
         // Wait for the frame render queue fence:
         //      We only have command buffer per frame so we need to wait for the previous one before
         //      submitting again, so we can reset it and use it once again.
-        cx.device.wait_for_fences(
+        device.wait_for_fences(
             &[frame.render_fence],
             true,
             std::time::Duration::from_secs(1).as_nanos() as u64,
@@ -390,15 +382,14 @@ impl Renderer {
 
         // Reset the render fence:
         //      We have already waited for it, so we reset it preparing it for this next upload
-        cx.device.reset_fences(&[frame.render_fence])?;
+        device.reset_fences(&[frame.render_fence])?;
 
         // Reset the frame command buffer so we can reuse it:
         //      Technically we shouldn't do this, and we should have a couple command buffers to use
         //      before resetting them all (Resetting command buffers individually is a bit slower
         //      than resetting the entire pool)
         // https://arm-software.github.io/vulkan_best_practice_for_mobile_developers/samples/performance/command_buffer_usage/command_buffer_usage_tutorial.html#resetting-individual-command-buffers
-        cx.device
-            .reset_command_pool(frame.cmd_pool, vk::CommandPoolResetFlags::empty())?;
+        device.reset_command_pool(frame.cmd_pool, vk::CommandPoolResetFlags::empty())?;
 
         // Obtain the next image we should be drawing onto:
         //      We're using a swapchain, so the driver should tell us which image of the
@@ -412,14 +403,14 @@ impl Renderer {
 
         // Start recording commands to the command buffer:
         //      We now are ready to tell the GPU what to do.
-        cx.device.begin_command_buffer(
+        device.begin_command_buffer(
             frame.cmd,
             &ash::vk::CommandBufferBeginInfo::builder()
                 .flags(ash::vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT),
         )?;
 
         // Update viewport and scissor
-        cx.device.cmd_set_viewport(
+        device.cmd_set_viewport(
             frame.cmd,
             0,
             &[*vk::Viewport::builder()
@@ -428,7 +419,7 @@ impl Renderer {
                 .min_depth(0.)
                 .max_depth(1.)],
         );
-        cx.device.cmd_set_scissor(
+        device.cmd_set_scissor(
             frame.cmd,
             0,
             &[*vk::Rect2D::builder().extent(vk::Extent2D {
@@ -490,37 +481,37 @@ impl Renderer {
         };
 
         abs::memory::cmd_stage(
-            &cx.device,
+            &device,
             &mut frame.allocator,
             frame.cmd,
             &[world_uniform],
             &self.world_uniform,
         )?
         .name(
-            cx.device.handle(),
+            device.handle(),
             &cx.debug_utils_loader,
             cstr::cstr!("Camera Uniform Scratch Buffer"),
         )?;
 
         abs::memory::cmd_stage(
-            &cx.device,
+            &device,
             &mut frame.allocator,
             frame.cmd,
             &[model_uniform],
             &self.model_uniform,
         )?
         .name(
-            cx.device.handle(),
+            device.handle(),
             &cx.debug_utils_loader,
             cstr::cstr!("Model Uniform Scratch Buffer"),
         )?;
 
         // Insert a memory barrier to wait until the cube mesh and camera uniform have been uploaded.
-        abs::memory::cmd_stage_sync(&cx.device, frame.cmd);
+        abs::memory::cmd_stage_sync(&device, frame.cmd);
 
         // Begin a render pass:
         //      We clear the whole frame with black.
-        cx.device.cmd_begin_render_pass(
+        device.cmd_begin_render_pass(
             frame.cmd,
             &ash::vk::RenderPassBeginInfo::builder()
                 .clear_values(&[
@@ -556,7 +547,7 @@ impl Renderer {
                 Material::FlatLit => {
                     // Bind our pipeline:
                     //      We tell the GPU to configure its layout for what's coming...
-                    cx.device.cmd_bind_pipeline(
+                    device.cmd_bind_pipeline(
                         frame.cmd,
                         ash::vk::PipelineBindPoint::GRAPHICS,
                         if self.wireframe {
@@ -566,7 +557,7 @@ impl Renderer {
                         },
                     );
 
-                    cx.device.cmd_bind_descriptor_sets(
+                    device.cmd_bind_descriptor_sets(
                         frame.cmd,
                         vk::PipelineBindPoint::GRAPHICS,
                         self.flat_lit_pipeline_layout,
@@ -579,7 +570,7 @@ impl Renderer {
                     let Some(texture) = self.textures.get(texture.0) else{ continue;};
                     // Bind our pipeline:
                     //      We tell the GPU to configure its layout for what's coming...
-                    cx.device.cmd_bind_pipeline(
+                    device.cmd_bind_pipeline(
                         frame.cmd,
                         ash::vk::PipelineBindPoint::GRAPHICS,
                         if self.wireframe {
@@ -594,7 +585,7 @@ impl Renderer {
                     let texture_uniform_set = frame
                         .ds_allocator
                         .allocate(self.texture_uniform_set_layout)?;
-                    cx.device.update_descriptor_sets(
+                    device.update_descriptor_sets(
                         &[*vk::WriteDescriptorSet::builder()
                             .dst_binding(0)
                             .dst_set(texture_uniform_set)
@@ -606,7 +597,7 @@ impl Renderer {
                         &[],
                     );
 
-                    cx.device.cmd_bind_descriptor_sets(
+                    device.cmd_bind_descriptor_sets(
                         frame.cmd,
                         vk::PipelineBindPoint::GRAPHICS,
                         self.textured_lit_pipeline_layout,
@@ -621,13 +612,13 @@ impl Renderer {
                 }
             }
 
-            cx.device.cmd_bind_index_buffer(
+            device.cmd_bind_index_buffer(
                 frame.cmd,
                 mesh.indices.buffer.raw,
                 mesh.indices.offset,
                 GpuIndex::index_type(),
             );
-            cx.device.cmd_bind_vertex_buffers(
+            device.cmd_bind_vertex_buffers(
                 frame.cmd,
                 0,
                 &[mesh.vertices.buffer.raw],
@@ -635,12 +626,11 @@ impl Renderer {
             );
 
             // Draw the mesh taking the index buffer into account.
-            cx.device
-                .cmd_draw_indexed(frame.cmd, mesh.vertex_count, 1, 0, 0, 0);
+            device.cmd_draw_indexed(frame.cmd, mesh.vertex_count, 1, 0, 0, 0);
         }
 
-        cx.device.cmd_end_render_pass(frame.cmd);
-        cx.device.end_command_buffer(frame.cmd)?;
+        device.cmd_end_render_pass(frame.cmd);
+        device.end_command_buffer(frame.cmd)?;
 
         let wait_stage = &[ash::vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT];
         let wait_semaphores = &[frame.present_semaphore];
@@ -657,8 +647,7 @@ impl Renderer {
         //      We set it to take place after the image acquisition has been finalized.
         //      This operation will take a while, so we set it to open our render queue fence
         //      once it is complete.
-        cx.device
-            .queue_submit(cx.render_queue.0, &[submit], frame.render_fence)?;
+        device.queue_submit(cx.render_queue.0, &[submit], frame.render_fence)?;
 
         // Present the frame drawn:
         //      We adjust this operation to take place after the submission has finished.
@@ -684,6 +673,7 @@ impl Renderer {
         mesh: &CpuMesh,
     ) -> anyhow::Result<abs::mesh::GpuMesh> {
         assert_ne!(mesh.vertices.len(), 0, "mesh must not be empty");
+        let device = get_device();
         let gpu_format_vertices = mesh
             .vertices
             .iter()
@@ -694,9 +684,10 @@ impl Renderer {
                 uv: v.uv.to_array(),
             })
             .collect::<Vec<_>>();
+        let memory = get_memory();
         let vertices_gpu = arenas.vertex.suballocate(
-            &mut cx.memory,
-            cx.device.handle(),
+            &*memory,
+            device.handle(),
             &cx.debug_utils_loader,
             ((mesh.vertices.len() * std::mem::size_of::<Vertex>()) as u64)
                 .into_nonzero()
@@ -704,8 +695,8 @@ impl Renderer {
         )?;
 
         let indices_gpu = arenas.index.suballocate(
-            &mut cx.memory,
-            cx.device.handle(),
+            &*memory,
+            device.handle(),
             &cx.debug_utils_loader,
             ((mesh.indices.len() * std::mem::size_of::<Vertex>()) as u64)
                 .into_nonzero()
@@ -735,6 +726,8 @@ impl Renderer {
         frame: &mut Frame,
         image: &image::RgbImage,
     ) -> anyhow::Result<abs::image::GpuTexture> {
+        let device = get_device();
+        let memory = get_memory();
         let extent = vk::Extent3D {
             width: image.width(),
             height: image.height(),
@@ -751,7 +744,7 @@ impl Renderer {
             .sharing_mode(vk::SharingMode::EXCLUSIVE)
             .samples(vk::SampleCountFlags::TYPE_1)
             .mip_levels(1);
-        let gpu_img = cx.memory.allocate_image(&info)?;
+        let gpu_img = memory.allocate_image(&info)?;
 
         let subresource_range = *vk::ImageSubresourceRange::builder()
             .aspect_mask(vk::ImageAspectFlags::COLOR)
@@ -764,7 +757,7 @@ impl Renderer {
             .old_layout(vk::ImageLayout::UNDEFINED)
             .new_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
             .subresource_range(subresource_range);
-        cx.device.cmd_pipeline_barrier(
+        device.cmd_pipeline_barrier(
             frame.cmd,
             vk::PipelineStageFlags::TOP_OF_PIPE,
             vk::PipelineStageFlags::TRANSFER,
@@ -774,7 +767,7 @@ impl Renderer {
             &[*image_mem_barrier],
         );
 
-        let scratch = cx.memory.allocate_scratch_buffer(
+        let scratch = memory.allocate_scratch_buffer(
             *vk::BufferCreateInfo::builder()
                 .sharing_mode(vk::SharingMode::EXCLUSIVE)
                 .size(image.width() as u64 * image.height() as u64 * 4)
@@ -789,7 +782,7 @@ impl Renderer {
             .collect::<Vec<u8>>();
         scratch.allocation.write_mapped(&pixel_data)?;
 
-        cx.device.cmd_copy_buffer_to_image(
+        device.cmd_copy_buffer_to_image(
             frame.cmd,
             scratch.raw,
             gpu_img.raw,
@@ -814,7 +807,7 @@ impl Renderer {
             .old_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
             .new_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
             .subresource_range(subresource_range);
-        cx.device.cmd_pipeline_barrier(
+        device.cmd_pipeline_barrier(
             frame.cmd,
             vk::PipelineStageFlags::TOP_OF_PIPE,
             vk::PipelineStageFlags::TRANSFER,
@@ -824,7 +817,7 @@ impl Renderer {
             &[*image_mem_barrier],
         );
 
-        let view = cx.device.create_image_view(
+        let view = device.create_image_view(
             &vk::ImageViewCreateInfo::builder()
                 .components(vk::ComponentMapping::default())
                 .format(vk::Format::B8G8R8A8_SRGB)
@@ -983,23 +976,22 @@ unsafe fn create_pipeline(
         .viewport_state(&viewport_state)
         .vertex_input_state(&*vertex_input_state_raw)
         .dynamic_state(&dynamic_state);
-    let pipeline = cx
-        .device
+    let pipeline = get_device()
         .create_graphics_pipelines(vk::PipelineCache::null(), &[*pipeline_info], None)
         .map_err(|(_, e)| e)?[0];
     Ok(pipeline)
 }
 
 pub struct Arenas {
-    pub vertex: abs::buffer::BuddyBufferArena,
-    pub index: abs::buffer::BuddyBufferArena,
-    pub uniform: abs::buffer::BuddyBufferArena,
+    pub vertex: abs::buffer::BufferArena<BuddyAllocator>,
+    pub index: abs::buffer::BufferArena<BuddyAllocator>,
+    pub uniform: abs::buffer::BufferArena<BuddyAllocator>,
 }
 
 impl Arenas {
     pub fn new(limits: &vk::PhysicalDeviceLimits) -> Self {
         Arenas {
-            vertex: abs::buffer::BuddyBufferArena::new(
+            vertex: abs::buffer::BufferArena::new(
                 vk::BufferCreateInfo::builder()
                     .size(256 * 1024 * std::mem::size_of::<abs::mesh::GpuVertex>() as u64)
                     .usage(vk::BufferUsageFlags::TRANSFER_DST | vk::BufferUsageFlags::VERTEX_BUFFER)
@@ -1011,7 +1003,7 @@ impl Arenas {
                 256 * std::mem::size_of::<abs::mesh::GpuVertex>() as u64,
                 cstr::cstr!("Vertex buffer arena").to_owned(),
             ),
-            index: abs::buffer::BuddyBufferArena::new(
+            index: abs::buffer::BufferArena::new(
                 vk::BufferCreateInfo::builder()
                     .size(2 * 1024 * 1024 * std::mem::size_of::<GpuIndex>() as u64)
                     .usage(vk::BufferUsageFlags::TRANSFER_DST | vk::BufferUsageFlags::INDEX_BUFFER)
@@ -1023,7 +1015,7 @@ impl Arenas {
                 256 * std::mem::size_of::<GpuIndex>() as u64,
                 cstr::cstr!("Index buffer arena").to_owned(),
             ),
-            uniform: abs::buffer::BuddyBufferArena::new(
+            uniform: abs::buffer::BufferArena::new(
                 vk::BufferCreateInfo::builder()
                     .size(64 * 128 * 1024)
                     .usage(

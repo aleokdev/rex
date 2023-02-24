@@ -21,6 +21,7 @@ impl<Allocation: space_alloc::Allocation> Buffer<Allocation> {
     pub unsafe fn name(
         &self,
         device: vk::Device,
+        // TODO put debugutils in ctxfr
         utils: &DebugUtils,
         name: &CStr,
     ) -> anyhow::Result<()> {
@@ -45,7 +46,7 @@ impl<Allocation: space_alloc::Allocation> Drop for Buffer<Allocation> {
     }
 }
 
-struct BufferArena<Allocator: space_alloc::Allocator> {
+pub struct BufferArena<Allocator: space_alloc::Allocator> {
     buffers: Vec<(Buffer<Allocator::Allocation>, Allocator)>,
     info: vk::BufferCreateInfo,
     usage: MemoryUsage,
@@ -55,10 +56,7 @@ struct BufferArena<Allocator: space_alloc::Allocator> {
     debug_name: CString,
 }
 
-// Need wrap to impl drop for generic instantiation.
-pub struct BuddyBufferArena(BufferArena<BuddyAllocator>);
-
-impl BuddyBufferArena {
+impl BufferArena<BuddyAllocator> {
     pub fn new(
         info: vk::BufferCreateInfo,
         usage: MemoryUsage,
@@ -67,7 +65,7 @@ impl BuddyBufferArena {
         min_alloc: u64,
         debug_name: CString,
     ) -> Self {
-        Self(BufferArena {
+        BufferArena {
             buffers: vec![],
             info,
             usage,
@@ -75,13 +73,12 @@ impl BuddyBufferArena {
             alignment,
             min_alloc,
             debug_name,
-        })
+        }
     }
 
     pub fn info_string(&self) -> String {
         let mut str = String::new();
-        self.0
-            .buffers
+        self.buffers
             .iter()
             .for_each(|(_, allocator)| str = format!("{}\n{:?}", str, allocator));
 
@@ -90,21 +87,21 @@ impl BuddyBufferArena {
 
     pub unsafe fn suballocate(
         &mut self,
-        memory: &mut GpuMemory,
+        memory: &GpuMemory,
         device: vk::Device,
         utils: &DebugUtils,
         size: NonZeroU64,
     ) -> anyhow::Result<BufferSlice<BuddyAllocation>> {
         use space_alloc::{Allocation, Allocator};
         assert!(
-            size.get() <= self.0.info.size,
+            size.get() <= self.info.size,
             "space tried to suballocate ({}B) was bigger than the entire buffer itself ({}B)",
             size.get(),
-            self.0.info.size
+            self.info.size
         );
 
-        for (buffer, allocator) in &mut self.0.buffers {
-            match allocator.allocate(size, self.0.alignment) {
+        for (buffer, allocator) in &mut self.buffers {
+            match allocator.allocate(size, self.alignment) {
                 Ok(allocation) => {
                     return Ok(BufferSlice {
                         buffer: buffer.clone(),
@@ -116,11 +113,11 @@ impl BuddyBufferArena {
             }
         }
 
-        let buffer = memory.allocate_buffer(self.0.info, self.0.usage, self.0.mapped)?;
-        buffer.name(device, utils, &self.0.debug_name)?;
-        self.0.buffers.push((
+        let buffer = memory.allocate_buffer(self.info, self.usage, self.mapped)?;
+        buffer.name(device, utils, &self.debug_name)?;
+        self.buffers.push((
             buffer,
-            Allocator::from_properties(self.0.min_alloc, self.0.info.size.into_nonzero().unwrap()),
+            Allocator::from_properties(self.min_alloc, self.info.size.into_nonzero().unwrap()),
         ));
 
         self.suballocate(memory, device, utils, size)

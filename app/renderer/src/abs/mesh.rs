@@ -1,5 +1,7 @@
 use std::num::NonZeroU64;
 
+use crate::device::get_device;
+
 use super::{
     buffer::BufferSlice,
     memory::{cmd_stage, GpuMemory},
@@ -116,13 +118,14 @@ impl<Allocation: space_alloc::Allocation> GpuMesh<Allocation> {
         vertices: &[GpuVertex],
         indices: &[u32],
     ) -> anyhow::Result<()> {
-        cmd_stage(&cx.device, scratch_memory, cmd, vertices, &self.vertices)?.name(
-            cx.device.handle(),
+        let device = get_device();
+        cmd_stage(&device, scratch_memory, cmd, vertices, &self.vertices)?.name(
+            device.handle(),
             &cx.debug_utils_loader,
             cstr::cstr!("Mesh Vertex Scratch Buffer"),
         )?;
-        cmd_stage(&cx.device, scratch_memory, cmd, indices, &self.indices)?.name(
-            cx.device.handle(),
+        cmd_stage(&device, scratch_memory, cmd, indices, &self.indices)?.name(
+            device.handle(),
             &cx.debug_utils_loader,
             cstr::cstr!("Mesh Index Scratch Buffer"),
         )?;

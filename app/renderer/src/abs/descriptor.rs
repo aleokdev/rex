@@ -2,6 +2,8 @@ use std::collections::HashMap;
 
 use ash::vk;
 
+use crate::device::get_device;
+
 use super::Cx;
 
 // credit vblanco
@@ -171,9 +173,9 @@ pub struct DescriptorLayoutCache {
 }
 
 impl DescriptorLayoutCache {
-    pub fn new(cx: &mut Cx) -> Self {
+    pub fn new() -> Self {
         DescriptorLayoutCache {
-            device: cx.device.clone(),
+            device: get_device().clone(),
             cache: HashMap::new(),
         }
     }
@@ -301,7 +303,7 @@ impl DescriptorBuilder {
             write.dst_set = set;
         }
 
-        cx.device.update_descriptor_sets(&self.writes, &[]);
+        get_device().update_descriptor_sets(&self.writes, &[]);
 
         Ok((set, layout))
     }

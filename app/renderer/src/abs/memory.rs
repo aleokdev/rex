@@ -37,6 +37,11 @@ pub struct GpuMemory {
     scratch: Mutex<Vec<vk::Buffer>>,
 }
 
+// Should be safe as we have mutexes for every write, it doesn't matter where we send it to or which
+// thread we share it with
+unsafe impl Send for GpuMemory {}
+unsafe impl Sync for GpuMemory {}
+
 impl GpuMemory {
     pub unsafe fn new(
         device: &ash::Device,

@@ -1,6 +1,9 @@
 use ash::vk;
 
-use crate::abs::{self, descriptor::DescriptorAllocator};
+use crate::{
+    abs::{self, descriptor::DescriptorAllocator},
+    device::get_device,
+};
 
 /// Represents an in-flight render frame.
 pub struct Frame {
@@ -18,24 +21,23 @@ pub struct Frame {
 
 impl Frame {
     pub unsafe fn new(cx: &mut abs::Cx) -> anyhow::Result<Self> {
-        let render_fence = cx.device.create_fence(
+        let device = get_device();
+        let render_fence = device.create_fence(
             &vk::FenceCreateInfo::builder().flags(vk::FenceCreateFlags::SIGNALED),
             None,
         )?;
 
         let semaphore_info = vk::SemaphoreCreateInfo::builder();
-        let present_semaphore = cx.device.create_semaphore(&semaphore_info, None)?;
-        let render_semaphore = cx.device.create_semaphore(&semaphore_info, None)?;
+        let present_semaphore = device.create_semaphore(&semaphore_info, None)?;
+        let render_semaphore = device.create_semaphore(&semaphore_info, None)?;
 
-        let cmd_pool = cx
-            .device
-            .create_command_pool(&vk::CommandPoolCreateInfo::builder(), None)?;
+        let cmd_pool = device.create_command_pool(&vk::CommandPoolCreateInfo::builder(), None)?;
 
         // (aleok): We have one fence per frame so only one command buffer is technically required;
         // TODO: We could use multiple so we need to reset less often but I'm leaving that to False
         // P.D: This change is justified since what we were doing previously was allocate one command
         // buffer per frame (and crash because getting out of device memory about 30k frames in)
-        let cmd = cx.device.allocate_command_buffers(
+        let cmd = device.allocate_command_buffers(
             &vk::CommandBufferAllocateInfo::builder()
                 .command_buffer_count(1)
                 .level(vk::CommandBufferLevel::PRIMARY)
@@ -48,9 +50,9 @@ impl Frame {
             render_fence,
             cmd_pool,
             cmd,
-            allocator: abs::memory::GpuMemory::new(&cx.device, &cx.instance, cx.physical_device)?,
+            allocator: abs::memory::GpuMemory::new(&device, &cx.instance, cx.physical_device)?,
             deletion: vec![],
-            ds_allocator: DescriptorAllocator::new(cx.device.clone()),
+            ds_allocator: DescriptorAllocator::new(device.clone()),
 
             counter: 0,
         })

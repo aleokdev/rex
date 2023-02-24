@@ -150,7 +150,7 @@ pub fn run(width: u32, height: u32) -> anyhow::Result<()> {
         match event {
             Event::WindowEvent { event, .. } => match event {
                 WindowEvent::Resized(new_size) => unsafe {
-                    app.cx.device.device_wait_idle().unwrap();
+                    renderer::get_device().device_wait_idle().unwrap();
                     app.cx
                         .recreate_swapchain(new_size.width, new_size.height)
                         .unwrap();
