@@ -1,5 +1,8 @@
 use std::ffi::{CStr, CString};
 use std::num::NonZeroU64;
+use std::ops::{Deref, DerefMut};
+
+use crate::device::{get_device, get_memory};
 
 use super::memory::{GpuAllocation, GpuMemory, MemoryUsage};
 use ash::extensions::ext::DebugUtils;
@@ -7,7 +10,7 @@ use ash::vk::{self, Handle};
 use nonzero_ext::NonZeroAble;
 use space_alloc::{BuddyAllocation, BuddyAllocator, OutOfMemory};
 
-#[derive(Debug, Clone)]
+#[derive(Clone, Debug)]
 pub struct Buffer<Allocation: space_alloc::Allocation> {
     pub raw: vk::Buffer,
     pub info: vk::BufferCreateInfo,
@@ -32,19 +35,17 @@ impl<Allocation: space_alloc::Allocation> Buffer<Allocation> {
     }
 }
 
-impl Buffer<BuddyAllocation> {
-    pub unsafe fn destroy(
-        self,
-        device: &ash::Device,
-        memory: &mut GpuMemory,
-    ) -> anyhow::Result<()> {
-        memory.free(self.allocation)?;
-        device.destroy_buffer(self.raw, None);
-        Ok(())
+impl<Allocation: space_alloc::Allocation> Drop for Buffer<Allocation> {
+    fn drop(&mut self) {
+        let device = get_device();
+        let memory = get_memory();
+        unsafe {
+            memory.free(&self.allocation);
+        }
     }
 }
 
-pub struct BufferArena<Allocator: space_alloc::Allocator> {
+struct BufferArena<Allocator: space_alloc::Allocator> {
     buffers: Vec<(Buffer<Allocator::Allocation>, Allocator)>,
     info: vk::BufferCreateInfo,
     usage: MemoryUsage,
@@ -54,7 +55,10 @@ pub struct BufferArena<Allocator: space_alloc::Allocator> {
     debug_name: CString,
 }
 
-impl BufferArena<BuddyAllocator> {
+// Need wrap to impl drop for generic instantiation.
+pub struct BuddyBufferArena(BufferArena<BuddyAllocator>);
+
+impl BuddyBufferArena {
     pub fn new(
         info: vk::BufferCreateInfo,
         usage: MemoryUsage,
@@ -63,7 +67,7 @@ impl BufferArena<BuddyAllocator> {
         min_alloc: u64,
         debug_name: CString,
     ) -> Self {
-        BufferArena {
+        Self(BufferArena {
             buffers: vec![],
             info,
             usage,
@@ -71,12 +75,13 @@ impl BufferArena<BuddyAllocator> {
             alignment,
             min_alloc,
             debug_name,
-        }
+        })
     }
 
     pub fn info_string(&self) -> String {
         let mut str = String::new();
-        self.buffers
+        self.0
+            .buffers
             .iter()
             .for_each(|(_, allocator)| str = format!("{}\n{:?}", str, allocator));
 
@@ -92,14 +97,14 @@ impl BufferArena<BuddyAllocator> {
     ) -> anyhow::Result<BufferSlice<BuddyAllocation>> {
         use space_alloc::{Allocation, Allocator};
         assert!(
-            size.get() <= self.info.size,
+            size.get() <= self.0.info.size,
             "space tried to suballocate ({}B) was bigger than the entire buffer itself ({}B)",
             size.get(),
-            self.info.size
+            self.0.info.size
         );
 
-        for (buffer, allocator) in &mut self.buffers {
-            match allocator.allocate(size, self.alignment) {
+        for (buffer, allocator) in &mut self.0.buffers {
+            match allocator.allocate(size, self.0.alignment) {
                 Ok(allocation) => {
                     return Ok(BufferSlice {
                         buffer: buffer.clone(),
@@ -111,25 +116,14 @@ impl BufferArena<BuddyAllocator> {
             }
         }
 
-        let buffer = memory.allocate_buffer(self.info, self.usage, self.mapped)?;
-        buffer.name(device, utils, &self.debug_name)?;
-        self.buffers.push((
+        let buffer = memory.allocate_buffer(self.0.info, self.0.usage, self.0.mapped)?;
+        buffer.name(device, utils, &self.0.debug_name)?;
+        self.0.buffers.push((
             buffer,
-            Allocator::from_properties(self.min_alloc, self.info.size.into_nonzero().unwrap()),
+            Allocator::from_properties(self.0.min_alloc, self.0.info.size.into_nonzero().unwrap()),
         ));
 
         self.suballocate(memory, device, utils, size)
-    }
-
-    pub unsafe fn destroy(
-        self,
-        device: &ash::Device,
-        memory: &mut GpuMemory,
-    ) -> anyhow::Result<()> {
-        for (buf, _) in self.buffers {
-            buf.destroy(device, memory)?;
-        }
-        Ok(())
     }
 }
 

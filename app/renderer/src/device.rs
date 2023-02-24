@@ -58,14 +58,6 @@ pub fn get_memory<'m>() -> RwLockReadGuard<'m, Memory> {
         .unwrap()
 }
 
-pub fn get_memory_mut<'m>() -> RwLockWriteGuard<'m, Memory> {
-    MEMORY
-        .get()
-        .expect("memory global should be set before usage")
-        .write()
-        .unwrap()
-}
-
 pub fn set_memory(memory: GpuMemory) {
     MEMORY.set(RwLock::new(Memory(memory))).unwrap_or_else(|_| {
         panic!("memory should not have been set before when calling set_memory")

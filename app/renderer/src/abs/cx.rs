@@ -1,5 +1,7 @@
 mod debug_callback;
 
+use crate::device::{set_device, set_memory};
+
 use super::{
     image::{GpuImage, GpuTexture},
     memory::{self, GpuMemory},

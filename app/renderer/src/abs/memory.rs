@@ -12,8 +12,8 @@ use nonzero_ext::{nonzero, NonZeroAble};
 use space_alloc::{
     linear::LinearAllocation, BuddyAllocation, BuddyAllocator, Deallocator, LinearAllocator,
 };
-use std::ffi::CStr;
 use std::{collections::HashMap, ffi::c_void, num::NonZeroU64};
+use std::{ffi::CStr, sync::Mutex};
 
 /// 256 MiB
 const DEVICE_BLOCK_SIZE: NonZeroU64 = nonzero!(256 * 1024 * 1024u64);
@@ -30,11 +30,11 @@ pub struct GpuMemory {
     device: ash::Device,
     memory_props: vk::PhysicalDeviceMemoryProperties,
 
-    linear_linear: HashMap<u32, MemoryType<LinearAllocator>>,
-    list_linear: HashMap<u32, MemoryType<BuddyAllocator>>,
-    images: HashMap<u32, MemoryType<BuddyAllocator>>,
+    linear_linear: Mutex<HashMap<u32, MemoryType<LinearAllocator>>>,
+    list_linear: Mutex<HashMap<u32, MemoryType<BuddyAllocator>>>,
+    images: Mutex<HashMap<u32, MemoryType<BuddyAllocator>>>,
 
-    scratch: Vec<vk::Buffer>,
+    scratch: Mutex<Vec<vk::Buffer>>,
 }
 
 impl GpuMemory {
@@ -49,16 +49,16 @@ impl GpuMemory {
             device: device.clone(),
             memory_props,
 
-            linear_linear: HashMap::new(),
-            list_linear: HashMap::new(),
-            images: HashMap::new(),
+            linear_linear: Default::default(),
+            list_linear: Default::default(),
+            images: Default::default(),
 
-            scratch: vec![],
+            scratch: Default::default(),
         })
     }
 
     pub unsafe fn allocate_scratch_buffer(
-        &mut self,
+        &self,
         info: vk::BufferCreateInfo,
         usage: MemoryUsage,
         mapped: bool,
@@ -77,7 +77,7 @@ impl GpuMemory {
         self.device
             .bind_buffer_memory(buffer, allocation.memory, allocation.offset())?;
 
-        self.scratch.push(buffer);
+        self.scratch.lock().unwrap().push(buffer);
 
         Ok(Buffer {
             raw: buffer,
@@ -87,7 +87,7 @@ impl GpuMemory {
     }
 
     unsafe fn allocate_scratch(
-        &mut self,
+        &self,
         usage: MemoryUsage,
         requirements: &vk::MemoryRequirements,
         mapped: bool,
@@ -120,8 +120,8 @@ impl GpuMemory {
         };
 
         // Obtain or create the memory type we are going to allocate into.
-        let memory_type = self
-            .linear_linear
+        let mut linear_linear = self.linear_linear.lock().unwrap();
+        let memory_type = linear_linear
             .entry(memory_type_index)
             .or_insert_with(|| MemoryType {
                 memory_blocks: vec![],
@@ -150,7 +150,7 @@ impl GpuMemory {
     }
 
     pub unsafe fn allocate_buffer(
-        &mut self,
+        &self,
         info: vk::BufferCreateInfo,
         usage: MemoryUsage,
         mapped: bool,
@@ -177,7 +177,7 @@ impl GpuMemory {
     }
 
     unsafe fn allocate_list(
-        &mut self,
+        &self,
         usage: MemoryUsage,
         requirements: &vk::MemoryRequirements,
         mapped: bool,
@@ -208,8 +208,8 @@ impl GpuMemory {
             HOST_BLOCK_SIZE
         };
 
-        let memory_type = self
-            .list_linear
+        let mut list_linear = self.list_linear.lock().unwrap();
+        let memory_type = list_linear
             .entry(memory_type_index)
             .or_insert_with(|| MemoryType {
                 memory_blocks: vec![],
@@ -236,10 +236,7 @@ impl GpuMemory {
         })
     }
 
-    pub unsafe fn allocate_image(
-        &mut self,
-        info: &vk::ImageCreateInfo,
-    ) -> anyhow::Result<GpuImage> {
+    pub unsafe fn allocate_image(&self, info: &vk::ImageCreateInfo) -> anyhow::Result<GpuImage> {
         let image = self.device.create_image(info, None)?;
         let requirements = self.device.get_image_memory_requirements(image);
 
@@ -250,8 +247,8 @@ impl GpuMemory {
         )
         .ok_or_else(|| anyhow::anyhow!("no compatible memory on GPU"))?;
 
-        let memory_type = self
-            .images
+        let mut images = self.images.lock().unwrap();
+        let memory_type = images
             .entry(memory_type_index)
             .or_insert_with(|| MemoryType {
                 memory_blocks: vec![],
@@ -289,21 +286,23 @@ impl GpuMemory {
         })
     }
 
-    pub unsafe fn free_scratch(&mut self) {
-        for memory_type in self.linear_linear.values_mut() {
+    pub unsafe fn free_scratch(&self) {
+        let mut linear_linear = self.linear_linear.lock().unwrap();
+        let mut scratch = self.scratch.lock().unwrap();
+        for memory_type in linear_linear.values_mut() {
             for block in &mut memory_type.memory_blocks {
                 block.allocator.reset();
             }
         }
 
-        for buffer in self.scratch.drain(..) {
+        for buffer in scratch.drain(..) {
             self.device.destroy_buffer(buffer, None);
         }
     }
 
-    pub unsafe fn free(
-        &mut self,
-        allocation: GpuAllocation<BuddyAllocation>,
+    pub unsafe fn free<Allocation: space_alloc::Allocation>(
+        &self,
+        allocation: &GpuAllocation<Allocation>,
     ) -> anyhow::Result<()> {
         fn free<Alloc: Deallocator>(
             map: &mut HashMap<u32, MemoryType<Alloc>>,
@@ -321,8 +320,16 @@ impl GpuMemory {
 
         match allocation.allocator {
             AllocatorType::Linear => Ok(()), // We cannot free memory allocated on a linear allocator in a per-alloc basis
-            AllocatorType::List => free(&mut self.list_linear, allocation),
-            AllocatorType::Image => free(&mut self.images, allocation),
+            AllocatorType::List => free(
+                &mut self.list_linear.lock().unwrap(),
+                // HACK because no specialization. this should be safe because allocation should be GpuAllocation<BuddyAllocation>
+                std::mem::transmute_copy(allocation),
+            ),
+            AllocatorType::Image => free(
+                &mut self.images.lock().unwrap(),
+                // HACK for same reason as above
+                std::mem::transmute_copy(allocation),
+            ),
         }
     }
 }
@@ -331,12 +338,18 @@ impl Drop for GpuMemory {
     fn drop(&mut self) {
         unsafe { self.free_scratch() };
         self.linear_linear
+            .lock()
+            .unwrap()
             .drain()
             .for_each(|(_, mem)| unsafe { mem.destroy(&self.device) });
         self.list_linear
+            .lock()
+            .unwrap()
             .drain()
             .for_each(|(_, mem)| unsafe { mem.destroy(&self.device) });
         self.images
+            .lock()
+            .unwrap()
             .drain()
             .for_each(|(_, mem)| unsafe { mem.destroy(&self.device) });
     }

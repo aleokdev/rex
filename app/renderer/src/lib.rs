@@ -67,7 +67,7 @@ pub struct Renderer {
     pub model_rotation: f32,
 
     pub frames: [Option<Frame>; Self::FRAME_OVERLAP],
-    pub deletion: Vec<Box<dyn FnOnce(&mut abs::Cx)>>,
+    pub deletion: Vec<Box<dyn FnOnce()>>,
 }
 
 impl Renderer {
@@ -855,46 +855,6 @@ impl Renderer {
     }
 
     pub unsafe fn destroy(mut self, cx: &mut abs::Cx) -> anyhow::Result<()> {
-        cx.device.device_wait_idle().unwrap();
-
-        self.deletion.drain(..).for_each(|f| f(cx));
-
-        self.frames.iter_mut().for_each(|frame| {
-            let frame = frame.take().unwrap();
-            cx.device.destroy_fence(frame.render_fence, None);
-            cx.device.destroy_semaphore(frame.present_semaphore, None);
-            cx.device.destroy_semaphore(frame.render_semaphore, None);
-
-            cx.device
-                .reset_command_pool(frame.cmd_pool, Default::default())
-                .unwrap();
-            cx.device.destroy_command_pool(frame.cmd_pool, None);
-
-            drop(frame.ds_allocator);
-            drop(frame.allocator);
-        });
-        for texture in self.textures {
-            texture.destroy(&cx.device, &mut cx.memory);
-        }
-
-        self.arenas.destroy(&cx.device, &mut cx.memory)?;
-        drop(self.ds_layout_cache);
-        drop(self.ds_allocator);
-        cx.device.destroy_sampler(self.sampler, None);
-        cx.device
-            .destroy_pipeline_layout(self.textured_lit_pipeline_layout, None);
-        cx.device.destroy_pipeline(self.textured_lit_pipeline, None);
-        cx.device
-            .destroy_pipeline_layout(self.flat_lit_pipeline_layout, None);
-        cx.device.destroy_pipeline(self.wireframe_pipeline, None);
-        cx.device.destroy_pipeline(self.flat_lit_pipeline, None);
-        cx.device.destroy_shader_module(self.vertex_shader, None);
-        cx.device.destroy_shader_module(self.fragment_shader, None);
-        cx.device.destroy_render_pass(self.pass, None);
-        self.framebuffers
-            .iter()
-            .for_each(|&fb| cx.device.destroy_framebuffer(fb, None));
-
         Ok(())
     }
 
@@ -904,6 +864,49 @@ impl Renderer {
 
     pub fn wireframe(&self) -> bool {
         self.wireframe
+    }
+}
+
+impl Drop for Renderer {
+    fn drop(&mut self) {
+        let device = get_device();
+        let memory = get_memory();
+        unsafe {
+            device.device_wait_idle().unwrap();
+
+            self.deletion.drain(..).for_each(|f| f());
+
+            self.frames.iter_mut().for_each(|frame| {
+                let frame = frame.take().unwrap();
+                device.destroy_fence(frame.render_fence, None);
+                device.destroy_semaphore(frame.present_semaphore, None);
+                device.destroy_semaphore(frame.render_semaphore, None);
+
+                device
+                    .reset_command_pool(frame.cmd_pool, Default::default())
+                    .unwrap();
+                device.destroy_command_pool(frame.cmd_pool, None);
+
+                drop(frame.ds_allocator);
+                drop(frame.allocator);
+            });
+            for texture in self.textures.drain(..) {
+                texture.destroy(&device, &*memory);
+            }
+
+            device.destroy_sampler(self.sampler, None);
+            device.destroy_pipeline_layout(self.textured_lit_pipeline_layout, None);
+            device.destroy_pipeline(self.textured_lit_pipeline, None);
+            device.destroy_pipeline_layout(self.flat_lit_pipeline_layout, None);
+            device.destroy_pipeline(self.wireframe_pipeline, None);
+            device.destroy_pipeline(self.flat_lit_pipeline, None);
+            device.destroy_shader_module(self.vertex_shader, None);
+            device.destroy_shader_module(self.fragment_shader, None);
+            device.destroy_render_pass(self.pass, None);
+            self.framebuffers
+                .iter()
+                .for_each(|&fb| device.destroy_framebuffer(fb, None));
+        }
     }
 }
 
@@ -988,15 +991,15 @@ unsafe fn create_pipeline(
 }
 
 pub struct Arenas {
-    pub vertex: abs::buffer::BufferArena<BuddyAllocator>,
-    pub index: abs::buffer::BufferArena<BuddyAllocator>,
-    pub uniform: abs::buffer::BufferArena<BuddyAllocator>,
+    pub vertex: abs::buffer::BuddyBufferArena,
+    pub index: abs::buffer::BuddyBufferArena,
+    pub uniform: abs::buffer::BuddyBufferArena,
 }
 
 impl Arenas {
     pub fn new(limits: &vk::PhysicalDeviceLimits) -> Self {
         Arenas {
-            vertex: abs::buffer::BufferArena::new(
+            vertex: abs::buffer::BuddyBufferArena::new(
                 vk::BufferCreateInfo::builder()
                     .size(256 * 1024 * std::mem::size_of::<abs::mesh::GpuVertex>() as u64)
                     .usage(vk::BufferUsageFlags::TRANSFER_DST | vk::BufferUsageFlags::VERTEX_BUFFER)
@@ -1008,7 +1011,7 @@ impl Arenas {
                 256 * std::mem::size_of::<abs::mesh::GpuVertex>() as u64,
                 cstr::cstr!("Vertex buffer arena").to_owned(),
             ),
-            index: abs::buffer::BufferArena::new(
+            index: abs::buffer::BuddyBufferArena::new(
                 vk::BufferCreateInfo::builder()
                     .size(2 * 1024 * 1024 * std::mem::size_of::<GpuIndex>() as u64)
                     .usage(vk::BufferUsageFlags::TRANSFER_DST | vk::BufferUsageFlags::INDEX_BUFFER)
@@ -1020,7 +1023,7 @@ impl Arenas {
                 256 * std::mem::size_of::<GpuIndex>() as u64,
                 cstr::cstr!("Index buffer arena").to_owned(),
             ),
-            uniform: abs::buffer::BufferArena::new(
+            uniform: abs::buffer::BuddyBufferArena::new(
                 vk::BufferCreateInfo::builder()
                     .size(64 * 128 * 1024)
                     .usage(
@@ -1038,16 +1041,5 @@ impl Arenas {
                 cstr::cstr!("Uniform buffer arena").to_owned(),
             ),
         }
-    }
-
-    pub unsafe fn destroy(
-        self,
-        device: &ash::Device,
-        memory: &mut GpuMemory,
-    ) -> anyhow::Result<()> {
-        self.vertex.destroy(device, memory)?;
-        self.index.destroy(device, memory)?;
-        self.uniform.destroy(device, memory)?;
-        Ok(())
     }
 }
