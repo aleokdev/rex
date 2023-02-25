@@ -3,10 +3,10 @@ mod meshgen;
 
 use std::collections::HashSet;
 
-use glam::{ivec3, vec3, Vec2, Vec3};
+use glam::{ivec3, vec3, Vec3};
 use renderer::{
     abs::mesh::{self, CpuMesh},
-    get_debug_utils, get_device, get_instance, Camera, RenderData,
+    get_device, get_instance, Camera, RenderData,
 };
 use rex::grid::RoomId;
 use winit::{
@@ -329,12 +329,6 @@ pub fn run(width: u32, height: u32) -> anyhow::Result<()> {
                 log::warn!("loop destroyed");
                 let app = application.take().unwrap();
                 drop(app);
-
-                // TODO: Have context object, do this in custom drop
-                unsafe {
-                    get_device().destroy_device(None);
-                    get_instance().destroy_instance(None);
-                }
             }
             _ => {}
         }

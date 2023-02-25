@@ -47,11 +47,14 @@ impl<Allocator: space_alloc::Allocator> MemoryType<Allocator> {
             std::ptr::null_mut()
         };
 
-        self.memory_blocks.push(MemoryBlock {
-            raw: memory,
-            allocator: Allocator::from_properties(self.min_alloc_size, self.block_size),
+        let block = MemoryBlock::new(
+            memory,
+            Allocator::from_properties(self.min_alloc_size, self.block_size),
             mapped,
-        });
+        );
+        block.name(cstr::cstr!("Memory type block allocation"))?;
+
+        self.memory_blocks.push(block);
 
         Ok(())
     }
@@ -76,11 +79,11 @@ impl<Allocator: space_alloc::Allocator> MemoryType<Allocator> {
         // We iterate through all our blocks until we find one that isn't out of memory, then
         // allocate there.
         for (i, block) in self.memory_blocks.iter_mut().enumerate() {
-            match block.allocator.allocate(size, alignment) {
+            match block.allocator_mut().allocate(size, alignment) {
                 Ok(allocation) => {
                     return Ok(MemoryTypeAllocation {
-                        block_memory: block.raw,
-                        mapped: block.mapped.add(allocation.offset() as usize),
+                        block_memory: block.raw(),
+                        mapped: block.mapped().add(allocation.offset() as usize),
                         allocation,
                         block_index: i,
                     });
@@ -93,7 +96,7 @@ impl<Allocator: space_alloc::Allocator> MemoryType<Allocator> {
         // SAFETY: We have successfully pushed a MemoryBlock in allocate_block. [self.memory_blocks] cannot be empty.
         let block = self.memory_blocks.last_mut().unwrap_unchecked();
         let allocation = block
-            .allocator
+            .allocator_mut()
             .allocate(size, alignment)
             .unwrap_or_else(|_| {
                 panic!(
@@ -105,21 +108,10 @@ impl<Allocator: space_alloc::Allocator> MemoryType<Allocator> {
             });
 
         Ok(MemoryTypeAllocation {
-            block_memory: block.raw,
-            mapped: block.mapped.add(allocation.offset() as usize),
+            block_memory: block.raw(),
+            mapped: block.mapped().add(allocation.offset() as usize),
             allocation,
             block_index: self.memory_blocks.len() - 1,
         })
-    }
-}
-
-impl<Allocator: space_alloc::Allocator> Drop for MemoryType<Allocator> {
-    fn drop(&mut self) {
-        let device = get_device();
-        unsafe {
-            self.memory_blocks
-                .iter()
-                .for_each(|block| device.free_memory(block.raw, None));
-        }
     }
 }

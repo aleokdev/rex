@@ -296,7 +296,7 @@ impl GpuMemory {
                 .memory_blocks
                 .get_mut(allocation.memory_block_index)
                 .ok_or_else(|| anyhow::anyhow!("out of range memory block index"))?
-                .allocator
+                .allocator_mut()
                 .deallocate(&allocation.allocation);
             Ok(())
         }

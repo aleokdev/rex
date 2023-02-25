@@ -2,7 +2,7 @@ mod debug_callback;
 
 use crate::{
     device::{get_device, get_memory, set_device, set_memory},
-    get_debug_utils, set_debug_utils, set_instance,
+    get_debug_utils, get_instance, set_debug_utils, set_instance,
 };
 
 use super::{
@@ -96,6 +96,8 @@ impl Cx {
                 .enabled_extension_names(&raw_extensions),
             None,
         )?;
+        set_instance(instance);
+        let instance = get_instance();
 
         let debug_utils_loader = DebugUtils::new(&entry, &instance);
         let debug_callback = debug_utils_loader.create_debug_utils_messenger(
@@ -191,19 +193,20 @@ impl Cx {
                 .enabled_features(&features),
             None,
         )?;
+        set_device(device);
+        let device = get_device();
 
         let queue = (device.get_device_queue(queue, 0), queue);
 
         let swapchain_loader = Swapchain::new(&instance, &device);
 
-        let mut memory = super::memory::GpuMemory::new(&device, &instance, physical_device)?;
+        let memory = super::memory::GpuMemory::new(&device, &instance, physical_device)?;
+        set_memory(memory);
 
         let SwapchainData {
             swapchain,
             images: swapchain_images,
         } = Self::create_swapchain(
-            &device,
-            &memory,
             surface_format,
             &surface_loader,
             physical_device,
@@ -213,10 +216,6 @@ impl Cx {
             height,
             vk::SwapchainKHR::null(),
         )?;
-
-        set_device(device);
-        set_memory(memory);
-        set_instance(instance);
 
         Ok(Cx {
             window,
@@ -238,8 +237,6 @@ impl Cx {
 
     pub unsafe fn recreate_swapchain(&mut self, width: u32, height: u32) -> anyhow::Result<()> {
         let SwapchainData { swapchain, images } = Self::create_swapchain(
-            &*get_device(),
-            &*get_memory(),
             self.surface_format,
             &self.surface_loader,
             self.physical_device,
@@ -252,7 +249,7 @@ impl Cx {
 
         let old_swapchain = std::mem::replace(&mut self.swapchain, swapchain);
 
-        let mut old_swapchain_images = std::mem::replace(&mut self.swapchain_images, images);
+        let old_swapchain_images = std::mem::replace(&mut self.swapchain_images, images);
         get_device().device_wait_idle()?;
         drop(old_swapchain_images);
 
@@ -265,8 +262,6 @@ impl Cx {
     }
 
     unsafe fn create_swapchain(
-        device: &ash::Device,
-        memory: &GpuMemory,
         surface_format: vk::SurfaceFormatKHR,
         surface_loader: &ash::extensions::khr::Surface,
         physical_device: vk::PhysicalDevice,
@@ -276,6 +271,9 @@ impl Cx {
         height: u32,
         old_swapchain: vk::SwapchainKHR,
     ) -> anyhow::Result<SwapchainData> {
+        let device = get_device();
+        let memory = get_memory();
+
         let surface_caps =
             surface_loader.get_physical_device_surface_capabilities(physical_device, surface)?;
 
