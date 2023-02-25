@@ -103,13 +103,13 @@ impl GpuIndex {
     }
 }
 
-pub struct GpuMesh<Allocation: space_alloc::Allocation = BuddyAllocation> {
-    pub vertices: BufferSlice<Allocation>,
-    pub indices: BufferSlice<Allocation>,
+pub struct GpuMesh {
+    pub vertices: BufferSlice,
+    pub indices: BufferSlice,
     pub vertex_count: u32,
 }
 
-impl<Allocation: space_alloc::Allocation> GpuMesh<Allocation> {
+impl GpuMesh {
     pub unsafe fn upload(
         &mut self,
         cx: &mut Cx,
@@ -120,17 +120,9 @@ impl<Allocation: space_alloc::Allocation> GpuMesh<Allocation> {
     ) -> anyhow::Result<(Buffer<LinearAllocation>, Buffer<LinearAllocation>)> {
         let device = get_device();
         let buf1 = cmd_stage(&device, scratch_memory, cmd, vertices, &self.vertices)?;
-        buf1.name(
-            device.handle(),
-            &cx.debug_utils_loader,
-            cstr::cstr!("Mesh Vertex Scratch Buffer"),
-        )?;
+        buf1.name(cstr::cstr!("Mesh Vertex Scratch Buffer"))?;
         let buf2 = cmd_stage(&device, scratch_memory, cmd, indices, &self.indices)?;
-        buf2.name(
-            device.handle(),
-            &cx.debug_utils_loader,
-            cstr::cstr!("Mesh Index Scratch Buffer"),
-        )?;
+        buf2.name(cstr::cstr!("Mesh Index Scratch Buffer"))?;
         Ok((buf1, buf2))
     }
 }

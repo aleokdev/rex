@@ -5,6 +5,8 @@ use ash::{
     vk::{self, Handle},
 };
 
+use crate::{get_debug_utils, get_device};
+
 #[derive(Clone, Copy)]
 pub struct ShaderModule(pub vk::ShaderModule);
 
@@ -19,14 +21,9 @@ impl ShaderModule {
             None,
         )?))
     }
-    pub unsafe fn name(
-        self,
-        device: vk::Device,
-        utils: &DebugUtils,
-        name: &CStr,
-    ) -> anyhow::Result<Self> {
-        utils.debug_utils_set_object_name(
-            device,
+    pub unsafe fn name(self, name: &CStr) -> anyhow::Result<Self> {
+        get_debug_utils().set_debug_utils_object_name(
+            get_device().handle(),
             &vk::DebugUtilsObjectNameInfoEXT::builder()
                 .object_handle(self.0.as_raw())
                 .object_name(name)

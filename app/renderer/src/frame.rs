@@ -3,6 +3,7 @@ use ash::vk;
 use crate::{
     abs::{self, descriptor::DescriptorAllocator},
     device::get_device,
+    get_instance,
 };
 
 /// Represents an in-flight render frame.
@@ -13,7 +14,7 @@ pub struct Frame {
     pub cmd_pool: vk::CommandPool,
     pub cmd: vk::CommandBuffer,
     pub allocator: abs::memory::GpuMemory,
-    pub deletion: Vec<Box<dyn FnOnce(&mut abs::Cx)>>,
+    pub deletion: Vec<Box<dyn FnOnce()>>,
     pub ds_allocator: abs::descriptor::DescriptorAllocator,
 
     pub counter: u64,
@@ -50,11 +51,29 @@ impl Frame {
             render_fence,
             cmd_pool,
             cmd,
-            allocator: abs::memory::GpuMemory::new(&device, &cx.instance, cx.physical_device)?,
+            allocator: abs::memory::GpuMemory::new(&device, &get_instance(), cx.physical_device)?,
             deletion: vec![],
             ds_allocator: DescriptorAllocator::new(device.clone()),
 
             counter: 0,
         })
+    }
+}
+
+impl Drop for Frame {
+    fn drop(&mut self) {
+        let device = get_device();
+
+        unsafe {
+            device.destroy_fence(self.render_fence, None);
+            device.destroy_semaphore(self.present_semaphore, None);
+            device.destroy_semaphore(self.render_semaphore, None);
+
+            device
+                .reset_command_pool(self.cmd_pool, Default::default())
+                .unwrap();
+            device.destroy_command_pool(self.cmd_pool, None);
+            self.deletion.drain(..).for_each(|f| f());
+        }
     }
 }

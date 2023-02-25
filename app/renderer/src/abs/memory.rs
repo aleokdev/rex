@@ -78,11 +78,10 @@ impl GpuMemory {
         self.device
             .bind_buffer_memory(buffer, allocation.memory, allocation.offset())?;
 
-        Ok(Buffer {
-            raw: buffer,
-            allocation,
-            info,
-        })
+        Ok(
+            // SAFETY: `buffer` is given to the buffer wrapper and it is not used anywhere else.
+            Buffer::new(buffer, info, allocation),
+        )
     }
 
     unsafe fn allocate_scratch(
@@ -168,11 +167,10 @@ impl GpuMemory {
         self.device
             .bind_buffer_memory(buffer, allocation.memory, allocation.offset())?;
 
-        Ok(Buffer {
-            raw: buffer,
-            info,
-            allocation,
-        })
+        Ok(
+            // SAFETY: `buffer` is given to the wrapper and is not used anywhere else.
+            Buffer::new(buffer, info, allocation),
+        )
     }
 
     unsafe fn allocate_list(
@@ -403,12 +401,12 @@ impl MemoryUsage {
 /// Queues a copy from src to dst using a newly allocated scratch buffer.
 /// Returns the staging scratch buffer.
 #[must_use = "scratch buffer must be used as it otherwise will be freed immediately and cancel the upload"]
-pub unsafe fn cmd_stage<T: Clone, Alloc: space_alloc::Allocation>(
+pub unsafe fn cmd_stage<T: Clone>(
     device: &ash::Device,
     memory: &GpuMemory,
     cmd: vk::CommandBuffer,
     src: &[T],
-    dst: &BufferSlice<Alloc>,
+    dst: &BufferSlice,
 ) -> anyhow::Result<Buffer<LinearAllocation>> {
     let staging = memory.allocate_scratch_buffer(
         vk::BufferCreateInfo::builder()
@@ -420,16 +418,16 @@ pub unsafe fn cmd_stage<T: Clone, Alloc: space_alloc::Allocation>(
         true,
     )?;
 
-    staging.allocation.write_mapped(src)?;
+    staging.allocation().write_mapped(src)?;
 
     device.cmd_copy_buffer(
         cmd,
-        staging.raw,
-        dst.buffer.raw,
+        staging.raw(),
+        dst.raw(),
         &[vk::BufferCopy::builder()
             .src_offset(0)
-            .dst_offset(dst.offset)
-            .size(staging.info.size)
+            .dst_offset(dst.offset())
+            .size(staging.info().size)
             .build()],
     );
 

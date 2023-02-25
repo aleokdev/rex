@@ -5,6 +5,7 @@ use std::{
     sync::{Mutex, RwLock, RwLockReadGuard, RwLockWriteGuard},
 };
 
+use ash::extensions::ext::DebugUtils;
 use once_cell::sync::OnceCell;
 
 use crate::abs::memory::GpuMemory;
@@ -38,9 +39,37 @@ impl CtxFrInstance {
 }
 
 // todo: have a ctxfr instead?
+
+static DEBUG_UTILS: OnceCell<DebugUtils> = OnceCell::new();
+
+pub fn get_debug_utils<'i>() -> &'i DebugUtils {
+    DEBUG_UTILS
+        .get()
+        .expect("debug utils global should be set before usage")
+}
+
+pub fn set_debug_utils(debug_utils: DebugUtils) {
+    DEBUG_UTILS.set(debug_utils).unwrap_or_else(|_| {
+        panic!("debug_utils should not have been set before when calling set_debug_utils")
+    })
+}
+
+/// The VkInstance used. We only have a single one per application.
+static INSTANCE: OnceCell<ash::Instance> = OnceCell::new();
+
+pub fn get_instance<'i>() -> &'i ash::Instance {
+    INSTANCE
+        .get()
+        .expect("instance global should be set before usage")
+}
+
+pub fn set_instance(instance: ash::Instance) {
+    INSTANCE.set(instance).unwrap_or_else(|_| {
+        panic!("instance should not have been set before when calling set_instance")
+    })
+}
+
 /// The device used for destroying any object.
-///
-/// Hate me for this, but I think it's better than having one device reference per GPU handle.
 static DEVICE: OnceCell<ash::Device> = OnceCell::new();
 
 pub fn get_device<'d>() -> &'d ash::Device {
@@ -56,8 +85,6 @@ pub fn set_device(device: ash::Device) {
 }
 
 /// The memory used for destroying any object.
-///
-/// I swear it's not that bad, C does this with malloc and free. Don't blame me.
 static MEMORY: OnceCell<RwLock<GpuMemory>> = OnceCell::new();
 
 pub fn get_memory<'m>() -> RwLockReadGuard<'m, GpuMemory> {

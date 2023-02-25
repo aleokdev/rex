@@ -3,30 +3,87 @@ use std::num::NonZeroU64;
 use std::ops::{Deref, DerefMut};
 
 use crate::device::{get_device, get_memory};
+use crate::get_debug_utils;
 
 use super::memory::{GpuAllocation, GpuMemory, MemoryUsage};
+use anyhow::anyhow;
 use ash::extensions::ext::DebugUtils;
 use ash::vk::{self, Handle};
 use nonzero_ext::NonZeroAble;
 use space_alloc::{BuddyAllocation, BuddyAllocator, OutOfMemory};
 
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub struct Buffer<Allocation: space_alloc::Allocation> {
-    pub raw: vk::Buffer,
-    pub info: vk::BufferCreateInfo,
-    pub allocation: GpuAllocation<Allocation>,
+    raw: vk::Buffer,
+    info: vk::BufferCreateInfo,
+    allocation: GpuAllocation<Allocation>,
 }
 
 impl<Allocation: space_alloc::Allocation> Buffer<Allocation> {
-    pub unsafe fn name(
+    /// Creates a new Buffer wrapper from underlying components.
+    ///
+    /// ## Safety
+    /// `raw` must be a valid Buffer handle, and no other handle to the buffer must exist except the
+    /// one given to this function, as [`Buffer`] destroys the internal buffer on drop.
+    pub unsafe fn new(
+        raw: vk::Buffer,
+        info: vk::BufferCreateInfo,
+        allocation: GpuAllocation<Allocation>,
+    ) -> Self {
+        Self {
+            raw,
+            info,
+            allocation,
+        }
+    }
+
+    /// Returns the underlying buffer object.
+    ///
+    /// ## Note
+    /// The returned buffer must not be destroyed, as [`Buffer`] destroys it as well on drop.
+    pub fn raw(&self) -> vk::Buffer {
+        self.raw
+    }
+
+    pub fn info(&self) -> vk::BufferCreateInfo {
+        self.info
+    }
+
+    pub fn allocation(&self) -> &GpuAllocation<Allocation> {
+        &self.allocation
+    }
+
+    /// Create a view (or 'slice') into this buffer with the offset and size given.
+    ///
+    /// ## Safety
+    /// This is an unsafe operation because [`BufferSlice`] has no lifetime information, and can
+    /// refer to the buffer after free.
+    ///
+    /// This is required, at least for now, due to how [`BufferArena`] works (`suballocate` would
+    /// require to return a `'self` buffer slice, but then that'd require making the method accept
+    /// `&self` instead to be able to suballocate more than one buffer, and it'd also add lots of
+    /// self referential problems for the renderer)
+    pub unsafe fn slice(
         &self,
-        device: vk::Device,
-        // TODO put debugutils in ctxfr
-        utils: &DebugUtils,
-        name: &CStr,
-    ) -> anyhow::Result<()> {
-        utils.debug_utils_set_object_name(
-            device,
+        offset: vk::DeviceAddress,
+        size: vk::DeviceSize,
+    ) -> anyhow::Result<BufferSlice> {
+        if (offset + size) > self.info.size {
+            return Err(anyhow!("tried to slice buffer with invalid offset/size: offset {} & size {} while buffer is only {}B long", offset, size, self.info.size));
+        }
+
+        Ok(BufferSlice {
+            raw: self.raw,
+            offset,
+            size,
+        })
+    }
+}
+
+impl<Allocation: space_alloc::Allocation> Buffer<Allocation> {
+    pub unsafe fn name(&self, name: &CStr) -> anyhow::Result<()> {
+        get_debug_utils().set_debug_utils_object_name(
+            get_device().handle(),
             &vk::DebugUtilsObjectNameInfoEXT::builder()
                 .object_handle(self.raw.as_raw())
                 .object_name(name)
@@ -91,13 +148,16 @@ impl BufferArena<BuddyAllocator> {
         str
     }
 
+    /// Suballocates one of the internal buffers of the buffer arena, and returns a slice into it.
+    ///
+    /// The resulting slice is valid only for the duration of the arena.
     pub unsafe fn suballocate(
         &mut self,
         memory: &GpuMemory,
         device: vk::Device,
         utils: &DebugUtils,
         size: NonZeroU64,
-    ) -> anyhow::Result<BufferSlice<BuddyAllocation>> {
+    ) -> anyhow::Result<BufferSlice> {
         use space_alloc::{Allocation, Allocator};
         assert!(
             size.get() <= self.info.size,
@@ -108,19 +168,13 @@ impl BufferArena<BuddyAllocator> {
 
         for (buffer, allocator) in &mut self.buffers {
             match allocator.allocate(size, self.alignment) {
-                Ok(allocation) => {
-                    return Ok(BufferSlice {
-                        buffer: buffer.clone(),
-                        offset: allocation.offset(),
-                        size: allocation.size(),
-                    })
-                }
+                Ok(allocation) => return Ok(buffer.slice(allocation.offset(), allocation.size())?),
                 Err(OutOfMemory) => (),
             }
         }
 
         let buffer = memory.allocate_buffer(self.info, self.usage, self.mapped)?;
-        buffer.name(device, utils, &self.debug_name)?;
+        buffer.name(&self.debug_name)?;
         self.buffers.push((
             buffer,
             Allocator::from_properties(self.min_alloc, self.info.size.into_nonzero().unwrap()),
@@ -131,8 +185,26 @@ impl BufferArena<BuddyAllocator> {
 }
 
 #[derive(Debug, Clone)]
-pub struct BufferSlice<Allocation: space_alloc::Allocation> {
-    pub buffer: Buffer<Allocation>,
-    pub offset: vk::DeviceAddress,
-    pub size: vk::DeviceSize,
+pub struct BufferSlice {
+    raw: vk::Buffer,
+    offset: vk::DeviceAddress,
+    size: vk::DeviceSize,
+}
+
+impl BufferSlice {
+    pub fn offset(&self) -> u64 {
+        self.offset
+    }
+
+    pub fn size(&self) -> u64 {
+        self.size
+    }
+
+    /// Returns the underlying buffer object.
+    ///
+    /// ## Note
+    /// The returned buffer must not be destroyed, as [`Buffer`] destroys it as well on drop.
+    pub fn raw(&self) -> vk::Buffer {
+        self.raw
+    }
 }

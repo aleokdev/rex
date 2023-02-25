@@ -57,14 +57,15 @@ pub struct Renderer {
     // Same with `images_to_upload`!
     images_to_upload: VecDeque<image::RgbImage>,
     textures: Vec<abs::image::GpuTexture>,
-    pub world_uniform: abs::buffer::BufferSlice<BuddyAllocation>,
+    pub world_uniform: abs::buffer::BufferSlice,
     pub world_uniform_set: vk::DescriptorSet,
-    pub model_uniform: abs::buffer::BufferSlice<BuddyAllocation>,
+    pub model_uniform: abs::buffer::BufferSlice,
     pub model_uniform_set: vk::DescriptorSet,
 
     pub texture_uniform_set_layout: vk::DescriptorSetLayout,
     pub sampler: vk::Sampler,
 
+    // TODO remove
     pub model_rotation: f32,
 
     pub frames: [Option<Frame>; Self::FRAME_OVERLAP],
@@ -82,7 +83,7 @@ impl Renderer {
         let mut ds_layout_cache = abs::descriptor::DescriptorLayoutCache::new();
 
         let mut arenas = Arenas::new(
-            &cx.instance
+            &get_instance()
                 .get_physical_device_properties(cx.physical_device)
                 .limits,
         );
@@ -138,7 +139,7 @@ impl Renderer {
         let world_uniform = arenas.uniform.suballocate(
             &*get_memory(),
             device.handle(),
-            &cx.debug_utils_loader,
+            &get_debug_utils(),
             (std::mem::size_of::<WorldUniform>() as u64)
                 .into_nonzero()
                 .unwrap(),
@@ -147,7 +148,7 @@ impl Renderer {
         let model_uniform = arenas.uniform.suballocate(
             &*memory,
             device.handle(),
-            &cx.debug_utils_loader,
+            &get_debug_utils(),
             (std::mem::size_of::<ModelUniform>() as u64)
                 .into_nonzero()
                 .unwrap(),
@@ -158,8 +159,8 @@ impl Renderer {
                 .bind_buffer(
                     0,
                     &[vk::DescriptorBufferInfo::builder()
-                        .buffer(world_uniform.buffer.raw)
-                        .offset(world_uniform.offset)
+                        .buffer(world_uniform.raw())
+                        .offset(world_uniform.offset())
                         .range(std::mem::size_of::<WorldUniform>() as u64)
                         .build()],
                     vk::DescriptorType::UNIFORM_BUFFER,
@@ -172,8 +173,8 @@ impl Renderer {
                 .bind_buffer(
                     0,
                     &[vk::DescriptorBufferInfo::builder()
-                        .buffer(model_uniform.buffer.raw)
-                        .offset(model_uniform.offset)
+                        .buffer(model_uniform.raw())
+                        .offset(model_uniform.offset())
                         .range(std::mem::size_of::<ModelUniform>() as u64)
                         .build()],
                     vk::DescriptorType::UNIFORM_BUFFER,
@@ -217,29 +218,17 @@ impl Renderer {
 
         let vertex_shader =
             ShaderModule::from_spirv_bytes(include_bytes!("../../res/basic.vert.spv"), &device)?
-                .name(
-                    device.handle(),
-                    &cx.debug_utils_loader,
-                    cstr::cstr!("Basic Vertex shader"),
-                )?
+                .name(cstr::cstr!("Basic Vertex shader"))?
                 .0;
 
         let flat_fragment_shader =
             ShaderModule::from_spirv_bytes(include_bytes!("../../res/flat.frag.spv"), &device)?
-                .name(
-                    device.handle(),
-                    &cx.debug_utils_loader,
-                    cstr::cstr!("Basic Fragment shader"),
-                )?
+                .name(cstr::cstr!("Basic Fragment shader"))?
                 .0;
 
         let textured_fragment_shader =
             ShaderModule::from_spirv_bytes(include_bytes!("../../res/textured.frag.spv"), &device)?
-                .name(
-                    device.handle(),
-                    &cx.debug_utils_loader,
-                    cstr::cstr!("Textured Fragment shader"),
-                )?
+                .name(cstr::cstr!("Textured Fragment shader"))?
                 .0;
 
         const ENTRY_POINT: &CStr = cstr::cstr!("main");
@@ -364,9 +353,6 @@ impl Renderer {
             .take()
             .unwrap();
 
-        // Process the deletion queue for this frame.
-        frame.deletion.drain(..).for_each(|f| f(cx));
-
         // Wait for the frame render queue fence:
         //      We only have command buffer per frame so we need to wait for the previous one before
         //      submitting again, so we can reset it and use it once again.
@@ -375,6 +361,9 @@ impl Renderer {
             true,
             std::time::Duration::from_secs(1).as_nanos() as u64,
         )?;
+
+        // Process the deletion queue for this frame.
+        frame.deletion.drain(..).for_each(|f| f());
 
         // Reset the descriptor set allocator, as all of its used descriptor sets are not being used now.
         frame.ds_allocator.reset()?;
@@ -450,7 +439,7 @@ impl Renderer {
             }
         }
         if let Some(img) = self.images_to_upload.pop_front() {
-            match Self::setup_image(cx, &mut self.arenas, &mut frame, &img) {
+            match Self::setup_image(&mut frame, &img) {
                 Ok(texture) => {
                     self.textures.push(texture);
                 }
@@ -486,12 +475,8 @@ impl Renderer {
             &[world_uniform],
             &self.world_uniform,
         )?;
-        scratch.name(
-            device.handle(),
-            &cx.debug_utils_loader,
-            cstr::cstr!("Camera Uniform Scratch Buffer"),
-        )?;
-        frame.deletion.push(Box::new(move |_| drop(scratch)));
+        scratch.name(cstr::cstr!("Camera Uniform Scratch Buffer"))?;
+        frame.deletion.push(Box::new(move || drop(scratch)));
 
         let scratch = abs::memory::cmd_stage(
             &device,
@@ -500,12 +485,8 @@ impl Renderer {
             &[model_uniform],
             &self.model_uniform,
         )?;
-        scratch.name(
-            device.handle(),
-            &cx.debug_utils_loader,
-            cstr::cstr!("Model Uniform Scratch Buffer"),
-        )?;
-        frame.deletion.push(Box::new(move |_| drop(scratch)));
+        scratch.name(cstr::cstr!("Model Uniform Scratch Buffer"))?;
+        frame.deletion.push(Box::new(move || drop(scratch)));
 
         // Insert a memory barrier to wait until the cube mesh and camera uniform have been uploaded.
         abs::memory::cmd_stage_sync(&device, frame.cmd);
@@ -615,15 +596,15 @@ impl Renderer {
 
             device.cmd_bind_index_buffer(
                 frame.cmd,
-                mesh.indices.buffer.raw,
-                mesh.indices.offset,
+                mesh.indices.raw(),
+                mesh.indices.offset(),
                 GpuIndex::index_type(),
             );
             device.cmd_bind_vertex_buffers(
                 frame.cmd,
                 0,
-                &[mesh.vertices.buffer.raw],
-                &[mesh.vertices.offset],
+                &[mesh.vertices.raw()],
+                &[mesh.vertices.offset()],
             );
 
             // Draw the mesh taking the index buffer into account.
@@ -689,7 +670,7 @@ impl Renderer {
         let vertices_gpu = arenas.vertex.suballocate(
             &*memory,
             device.handle(),
-            &cx.debug_utils_loader,
+            &get_debug_utils(),
             ((mesh.vertices.len() * std::mem::size_of::<Vertex>()) as u64)
                 .into_nonzero()
                 .unwrap(),
@@ -698,7 +679,7 @@ impl Renderer {
         let indices_gpu = arenas.index.suballocate(
             &*memory,
             device.handle(),
-            &cx.debug_utils_loader,
+            &get_debug_utils(),
             ((mesh.indices.len() * std::mem::size_of::<Vertex>()) as u64)
                 .into_nonzero()
                 .unwrap(),
@@ -718,14 +699,12 @@ impl Renderer {
             &mesh.indices,
         )?;
 
-        frame.deletion.push(Box::new(move |_| drop(scratch)));
+        frame.deletion.push(Box::new(move || drop(scratch)));
 
         Ok(gpu_mesh)
     }
 
     unsafe fn setup_image(
-        cx: &mut abs::Cx,
-        arenas: &mut Arenas,
         frame: &mut Frame,
         image: &image::RgbImage,
     ) -> anyhow::Result<abs::image::GpuTexture> {
@@ -783,11 +762,11 @@ impl Renderer {
             // Convert RGB -> BGRA
             .flat_map(|p| [p.0[2], p.0[1], p.0[0], 0xFF].into_iter())
             .collect::<Vec<u8>>();
-        scratch.allocation.write_mapped(&pixel_data)?;
+        scratch.allocation().write_mapped(&pixel_data)?;
 
         device.cmd_copy_buffer_to_image(
             frame.cmd,
-            scratch.raw,
+            scratch.raw(),
             gpu_img.raw,
             vk::ImageLayout::TRANSFER_DST_OPTIMAL,
             &[*vk::BufferImageCopy::builder()
@@ -830,7 +809,7 @@ impl Renderer {
             None,
         )?;
 
-        frame.deletion.push(Box::new(move |_| drop(scratch)));
+        frame.deletion.push(Box::new(move || drop(scratch)));
 
         Ok(GpuTexture {
             image: gpu_img,
@@ -865,26 +844,10 @@ impl Drop for Renderer {
     fn drop(&mut self) {
         log::warn!("dropping renderer");
         let device = get_device();
-        let memory = get_memory();
         unsafe {
-            device.device_wait_idle().unwrap();
+            device.device_wait_idle();
 
             self.deletion.drain(..).for_each(|f| f());
-
-            self.frames.iter_mut().for_each(|frame| {
-                let frame = frame.take().unwrap();
-                device.destroy_fence(frame.render_fence, None);
-                device.destroy_semaphore(frame.present_semaphore, None);
-                device.destroy_semaphore(frame.render_semaphore, None);
-
-                device
-                    .reset_command_pool(frame.cmd_pool, Default::default())
-                    .unwrap();
-                device.destroy_command_pool(frame.cmd_pool, None);
-
-                drop(frame.ds_allocator);
-                drop(frame.allocator);
-            });
 
             device.destroy_sampler(self.sampler, None);
             device.destroy_pipeline_layout(self.textured_lit_pipeline_layout, None);

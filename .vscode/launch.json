@@ -41,6 +41,11 @@
                 }
             },
             "args": [],
+            "env": {
+                "REX_ENABLE_VALIDATION": "1",
+                "RUST_LOG": "renderer=debug",
+                "RUST_BACKTRACE": "1"
+            },
             "cwd": "${workspaceFolder}"
         },
         {

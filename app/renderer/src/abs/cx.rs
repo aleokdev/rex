@@ -1,6 +1,9 @@
 mod debug_callback;
 
-use crate::device::{get_device, get_memory, set_device, set_memory};
+use crate::{
+    device::{get_device, get_memory, set_device, set_memory},
+    get_debug_utils, set_debug_utils, set_instance,
+};
 
 use super::{
     image::{DriverManagedGpuImage, GpuImage, GpuTexture},
@@ -12,7 +15,7 @@ use ash::{
         ext::DebugUtils,
         khr::{Surface, Swapchain},
     },
-    vk,
+    vk::{self, DebugUtilsObjectNameInfoEXT, Handle},
 };
 use cstr::cstr;
 use raw_window_handle::{HasRawDisplayHandle, HasRawWindowHandle};
@@ -37,8 +40,6 @@ pub struct Cx {
     /// The height of the current swapchain, which may or may not coincide with the inner height of the window.
     pub height: u32,
 
-    pub instance: ash::Instance,
-    pub debug_utils_loader: DebugUtils,
     pub debug_callback: vk::DebugUtilsMessengerEXT,
     pub surface_loader: Surface,
     pub surface: vk::SurfaceKHR,
@@ -112,6 +113,7 @@ impl Cx {
                 .pfn_user_callback(Some(debug_callback::debug_callback)),
             None,
         )?;
+        set_debug_utils(debug_utils_loader);
 
         let surface_loader = Surface::new(&entry, &instance);
         let surface = ash_window::create_surface(
@@ -214,6 +216,7 @@ impl Cx {
 
         set_device(device);
         set_memory(memory);
+        set_instance(instance);
 
         Ok(Cx {
             window,
@@ -221,8 +224,6 @@ impl Cx {
             height,
 
             swapchain_loader,
-            instance,
-            debug_utils_loader,
             debug_callback,
             surface_loader,
             surface,
@@ -340,6 +341,14 @@ impl Cx {
                         .build(),
                 };
 
+                get_debug_utils().set_debug_utils_object_name(
+                    device.handle(),
+                    &DebugUtilsObjectNameInfoEXT::builder()
+                        .object_handle(image.as_raw())
+                        .object_name(cstr!("Swapchain color image"))
+                        .object_type(vk::ObjectType::IMAGE),
+                )?;
+
                 let color_view = device.create_image_view(
                     &vk::ImageViewCreateInfo::builder()
                         .image(color.raw)
@@ -351,6 +360,14 @@ impl Cx {
                             0..1,
                         )),
                     None,
+                )?;
+
+                get_debug_utils().set_debug_utils_object_name(
+                    device.handle(),
+                    &DebugUtilsObjectNameInfoEXT::builder()
+                        .object_handle(color_view.as_raw())
+                        .object_name(cstr!("Swapchain color view"))
+                        .object_type(vk::ObjectType::IMAGE_VIEW),
                 )?;
 
                 let depth = memory.allocate_image(
@@ -365,6 +382,14 @@ impl Cx {
                         .usage(vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT),
                 )?;
 
+                get_debug_utils().set_debug_utils_object_name(
+                    device.handle(),
+                    &DebugUtilsObjectNameInfoEXT::builder()
+                        .object_handle(depth.raw.as_raw())
+                        .object_name(cstr!("Swapchain depth image"))
+                        .object_type(vk::ObjectType::IMAGE),
+                )?;
+
                 let depth_view = device.create_image_view(
                     &vk::ImageViewCreateInfo::builder()
                         .image(depth.raw)
@@ -376,6 +401,14 @@ impl Cx {
                             0..1,
                         )),
                     None,
+                )?;
+
+                get_debug_utils().set_debug_utils_object_name(
+                    device.handle(),
+                    &DebugUtilsObjectNameInfoEXT::builder()
+                        .object_handle(depth_view.as_raw())
+                        .object_name(cstr!("Swapchain depth view"))
+                        .object_type(vk::ObjectType::IMAGE_VIEW),
                 )?;
 
                 Ok(SwapchainTexture {
@@ -407,10 +440,7 @@ impl Drop for Cx {
             self.swapchain_loader
                 .destroy_swapchain(self.swapchain, None);
             self.surface_loader.destroy_surface(self.surface, None);
-            device.destroy_device(None);
-            self.debug_utils_loader
-                .destroy_debug_utils_messenger(self.debug_callback, None);
-            self.instance.destroy_instance(None);
+            get_debug_utils().destroy_debug_utils_messenger(self.debug_callback, None);
         }
     }
 }
