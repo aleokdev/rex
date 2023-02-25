@@ -19,8 +19,8 @@ use winit::{
 use crate::{collision::move_and_slide, meshgen::CEILING_HEIGHT};
 
 struct App {
-    pub cx: renderer::abs::Cx,
     pub renderer: renderer::Renderer,
+    pub cx: renderer::abs::Cx,
     pub render_data: RenderData,
     room_meshes_uploaded: HashSet<RoomId>,
     database: rex::Database,
@@ -325,10 +325,11 @@ pub fn run(width: u32, height: u32) -> anyhow::Result<()> {
 
                 last_time = now_time;
             },
-            Event::LoopDestroyed => unsafe {
-                let mut app = application.take().unwrap();
-                app.renderer.destroy(&mut app.cx).unwrap();
-            },
+            Event::LoopDestroyed => {
+                log::warn!("loop destroyed");
+                let app = application.take().unwrap();
+                drop(app);
+            }
             _ => {}
         }
     })

@@ -33,8 +33,6 @@ pub struct GpuMemory {
     linear_linear: Mutex<HashMap<u32, MemoryType<LinearAllocator>>>,
     list_linear: Mutex<HashMap<u32, MemoryType<BuddyAllocator>>>,
     images: Mutex<HashMap<u32, MemoryType<BuddyAllocator>>>,
-
-    scratch: Mutex<Vec<vk::Buffer>>,
 }
 
 // Should be safe as we have mutexes for every write, it doesn't matter where we send it to or which
@@ -57,8 +55,6 @@ impl GpuMemory {
             linear_linear: Default::default(),
             list_linear: Default::default(),
             images: Default::default(),
-
-            scratch: Default::default(),
         })
     }
 
@@ -82,12 +78,10 @@ impl GpuMemory {
         self.device
             .bind_buffer_memory(buffer, allocation.memory, allocation.offset())?;
 
-        self.scratch.lock().unwrap().push(buffer);
-
         Ok(Buffer {
             raw: buffer,
-            info,
             allocation,
+            info,
         })
     }
 
@@ -291,20 +285,6 @@ impl GpuMemory {
         })
     }
 
-    pub unsafe fn free_scratch(&self) {
-        let mut linear_linear = self.linear_linear.lock().unwrap();
-        let mut scratch = self.scratch.lock().unwrap();
-        for memory_type in linear_linear.values_mut() {
-            for block in &mut memory_type.memory_blocks {
-                block.allocator.reset();
-            }
-        }
-
-        for buffer in scratch.drain(..) {
-            self.device.destroy_buffer(buffer, None);
-        }
-    }
-
     pub unsafe fn free<Allocation: space_alloc::Allocation>(
         &self,
         allocation: &GpuAllocation<Allocation>,
@@ -336,27 +316,6 @@ impl GpuMemory {
                 std::mem::transmute_copy(allocation),
             ),
         }
-    }
-}
-
-impl Drop for GpuMemory {
-    fn drop(&mut self) {
-        unsafe { self.free_scratch() };
-        self.linear_linear
-            .lock()
-            .unwrap()
-            .drain()
-            .for_each(|(_, mem)| unsafe { mem.destroy(&self.device) });
-        self.list_linear
-            .lock()
-            .unwrap()
-            .drain()
-            .for_each(|(_, mem)| unsafe { mem.destroy(&self.device) });
-        self.images
-            .lock()
-            .unwrap()
-            .drain()
-            .for_each(|(_, mem)| unsafe { mem.destroy(&self.device) });
     }
 }
 
@@ -443,14 +402,15 @@ impl MemoryUsage {
 
 /// Queues a copy from src to dst using a newly allocated scratch buffer.
 /// Returns the staging scratch buffer.
+#[must_use = "scratch buffer must be used as it otherwise will be freed immediately and cancel the upload"]
 pub unsafe fn cmd_stage<T: Clone, Alloc: space_alloc::Allocation>(
     device: &ash::Device,
-    scratch: &mut GpuMemory,
+    memory: &GpuMemory,
     cmd: vk::CommandBuffer,
     src: &[T],
     dst: &BufferSlice<Alloc>,
 ) -> anyhow::Result<Buffer<LinearAllocation>> {
-    let staging = scratch.allocate_scratch_buffer(
+    let staging = memory.allocate_scratch_buffer(
         vk::BufferCreateInfo::builder()
             .size(std::mem::size_of::<T>() as u64 * src.len() as u64)
             .usage(vk::BufferUsageFlags::TRANSFER_SRC)

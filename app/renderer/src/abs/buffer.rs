@@ -38,9 +38,15 @@ impl<Allocation: space_alloc::Allocation> Buffer<Allocation> {
 
 impl<Allocation: space_alloc::Allocation> Drop for Buffer<Allocation> {
     fn drop(&mut self) {
+        log::debug!(
+            "destroying buffer {:?}\n{}",
+            self.raw,
+            std::backtrace::Backtrace::capture()
+        );
         let device = get_device();
         let memory = get_memory();
         unsafe {
+            device.destroy_buffer(self.raw, None);
             memory.free(&self.allocation);
         }
     }

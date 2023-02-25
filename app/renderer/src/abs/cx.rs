@@ -3,7 +3,7 @@ mod debug_callback;
 use crate::device::{get_device, get_memory, set_device, set_memory};
 
 use super::{
-    image::{GpuImage, GpuTexture},
+    image::{DriverManagedGpuImage, GpuImage, GpuTexture},
     memory::{self, GpuMemory},
     util::subresource_range,
 };
@@ -23,24 +23,11 @@ use winit::{
 };
 
 pub struct SwapchainTexture {
-    pub color: GpuTexture,
-    pub depth: GpuTexture,
+    pub color: GpuTexture<DriverManagedGpuImage>,
+    pub depth: GpuTexture<GpuImage>,
 }
 
 pub struct SwapchainTextures(pub Vec<SwapchainTexture>);
-
-impl SwapchainTextures {
-    pub unsafe fn destroy(
-        &mut self,
-        device: &ash::Device,
-        memory: &GpuMemory,
-    ) -> anyhow::Result<()> {
-        self.0.drain(..).try_for_each(|img| {
-            device.destroy_image_view(img.color.view, None);
-            img.depth.destroy(&device, memory)
-        })
-    }
-}
 
 /// Represents a link to the GPU, and stores common data used by both compute and graphics.
 pub struct Cx {
@@ -263,11 +250,11 @@ impl Cx {
         )?;
 
         let old_swapchain = std::mem::replace(&mut self.swapchain, swapchain);
+
         let mut old_swapchain_images = std::mem::replace(&mut self.swapchain_images, images);
-
         get_device().device_wait_idle()?;
+        drop(old_swapchain_images);
 
-        old_swapchain_images.destroy(&*get_device(), &*get_memory())?;
         self.swapchain_loader.destroy_swapchain(old_swapchain, None);
 
         self.width = width;
@@ -336,7 +323,7 @@ impl Cx {
                     height,
                     depth: 1,
                 };
-                let color = GpuImage {
+                let color = DriverManagedGpuImage {
                     raw: image,
                     allocation: None,
                     // synthesise some assumed information about the swapchain images
@@ -419,9 +406,6 @@ impl Drop for Cx {
             device.device_wait_idle().unwrap();
             self.swapchain_loader
                 .destroy_swapchain(self.swapchain, None);
-            self.swapchain_images
-                .destroy(&device, &*get_memory())
-                .unwrap();
             self.surface_loader.destroy_surface(self.surface, None);
             device.destroy_device(None);
             self.debug_utils_loader

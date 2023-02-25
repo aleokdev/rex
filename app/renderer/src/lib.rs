@@ -38,6 +38,7 @@ pub struct Renderer {
 
     pub vertex_shader: vk::ShaderModule,
     pub fragment_shader: vk::ShaderModule,
+    pub textured_fragment_shader: vk::ShaderModule,
     pub wireframe_pipeline: vk::Pipeline,
     pub wireframe_pipeline_layout: vk::PipelineLayout,
     pub flat_lit_pipeline: vk::Pipeline,
@@ -282,6 +283,7 @@ impl Renderer {
 
             vertex_shader,
             fragment_shader: flat_fragment_shader,
+            textured_fragment_shader,
             wireframe_pipeline,
             wireframe_pipeline_layout: flat_pipeline_layout,
             flat_lit_pipeline,
@@ -364,9 +366,6 @@ impl Renderer {
 
         // Process the deletion queue for this frame.
         frame.deletion.drain(..).for_each(|f| f(cx));
-
-        // Free all scratch memory, since it's only used for uploading to the GPU.
-        frame.allocator.free_scratch();
 
         // Wait for the frame render queue fence:
         //      We only have command buffer per frame so we need to wait for the previous one before
@@ -480,31 +479,33 @@ impl Renderer {
             model: glam::Mat4::from_rotation_y(self.model_rotation),
         };
 
-        abs::memory::cmd_stage(
+        let scratch = abs::memory::cmd_stage(
             &device,
             &mut frame.allocator,
             frame.cmd,
             &[world_uniform],
             &self.world_uniform,
-        )?
-        .name(
+        )?;
+        scratch.name(
             device.handle(),
             &cx.debug_utils_loader,
             cstr::cstr!("Camera Uniform Scratch Buffer"),
         )?;
+        frame.deletion.push(Box::new(move |_| drop(scratch)));
 
-        abs::memory::cmd_stage(
+        let scratch = abs::memory::cmd_stage(
             &device,
             &mut frame.allocator,
             frame.cmd,
             &[model_uniform],
             &self.model_uniform,
-        )?
-        .name(
+        )?;
+        scratch.name(
             device.handle(),
             &cx.debug_utils_loader,
             cstr::cstr!("Model Uniform Scratch Buffer"),
         )?;
+        frame.deletion.push(Box::new(move |_| drop(scratch)));
 
         // Insert a memory barrier to wait until the cube mesh and camera uniform have been uploaded.
         abs::memory::cmd_stage_sync(&device, frame.cmd);
@@ -709,13 +710,15 @@ impl Renderer {
             vertex_count: mesh.indices.len() as u32,
         };
 
-        gpu_mesh.upload(
+        let scratch = gpu_mesh.upload(
             cx,
             &mut frame.allocator,
             frame.cmd,
             &gpu_format_vertices,
             &mesh.indices,
         )?;
+
+        frame.deletion.push(Box::new(move |_| drop(scratch)));
 
         Ok(gpu_mesh)
     }
@@ -827,6 +830,8 @@ impl Renderer {
             None,
         )?;
 
+        frame.deletion.push(Box::new(move |_| drop(scratch)));
+
         Ok(GpuTexture {
             image: gpu_img,
             view,
@@ -847,10 +852,6 @@ impl Renderer {
         GpuTextureHandle(self.images_to_upload.len() + self.textures.len() - 1)
     }
 
-    pub unsafe fn destroy(mut self, cx: &mut abs::Cx) -> anyhow::Result<()> {
-        Ok(())
-    }
-
     pub fn set_wireframe(&mut self, wireframe: bool) {
         self.wireframe = wireframe;
     }
@@ -862,6 +863,7 @@ impl Renderer {
 
 impl Drop for Renderer {
     fn drop(&mut self) {
+        log::warn!("dropping renderer");
         let device = get_device();
         let memory = get_memory();
         unsafe {
@@ -883,9 +885,6 @@ impl Drop for Renderer {
                 drop(frame.ds_allocator);
                 drop(frame.allocator);
             });
-            for texture in self.textures.drain(..) {
-                texture.destroy(&device, &*memory);
-            }
 
             device.destroy_sampler(self.sampler, None);
             device.destroy_pipeline_layout(self.textured_lit_pipeline_layout, None);
@@ -895,6 +894,7 @@ impl Drop for Renderer {
             device.destroy_pipeline(self.flat_lit_pipeline, None);
             device.destroy_shader_module(self.vertex_shader, None);
             device.destroy_shader_module(self.fragment_shader, None);
+            device.destroy_shader_module(self.textured_fragment_shader, None);
             device.destroy_render_pass(self.pass, None);
             self.framebuffers
                 .iter()

@@ -5,6 +5,8 @@ use std::{ffi::c_void, num::NonZeroU64};
 use ash::vk;
 use space_alloc::OutOfMemory;
 
+use crate::get_device;
+
 pub use self::block::MemoryBlock;
 
 pub struct MemoryType<Allocator: space_alloc::Allocator> {
@@ -109,10 +111,15 @@ impl<Allocator: space_alloc::Allocator> MemoryType<Allocator> {
             block_index: self.memory_blocks.len() - 1,
         })
     }
+}
 
-    pub unsafe fn destroy(self, device: &ash::Device) {
-        self.memory_blocks
-            .into_iter()
-            .for_each(|block| device.free_memory(block.raw, None));
+impl<Allocator: space_alloc::Allocator> Drop for MemoryType<Allocator> {
+    fn drop(&mut self) {
+        let device = get_device();
+        unsafe {
+            self.memory_blocks
+                .iter()
+                .for_each(|block| device.free_memory(block.raw, None));
+        }
     }
 }

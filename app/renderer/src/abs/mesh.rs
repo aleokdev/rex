@@ -3,13 +3,13 @@ use std::num::NonZeroU64;
 use crate::device::get_device;
 
 use super::{
-    buffer::BufferSlice,
+    buffer::{Buffer, BufferSlice},
     memory::{cmd_stage, GpuMemory},
     Cx,
 };
 use ash::vk;
 use nonzero_ext::nonzero;
-use space_alloc::BuddyAllocation;
+use space_alloc::{linear::LinearAllocation, BuddyAllocation};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Vertex {
@@ -117,19 +117,21 @@ impl<Allocation: space_alloc::Allocation> GpuMesh<Allocation> {
         cmd: vk::CommandBuffer,
         vertices: &[GpuVertex],
         indices: &[u32],
-    ) -> anyhow::Result<()> {
+    ) -> anyhow::Result<(Buffer<LinearAllocation>, Buffer<LinearAllocation>)> {
         let device = get_device();
-        cmd_stage(&device, scratch_memory, cmd, vertices, &self.vertices)?.name(
+        let buf1 = cmd_stage(&device, scratch_memory, cmd, vertices, &self.vertices)?;
+        buf1.name(
             device.handle(),
             &cx.debug_utils_loader,
             cstr::cstr!("Mesh Vertex Scratch Buffer"),
         )?;
-        cmd_stage(&device, scratch_memory, cmd, indices, &self.indices)?.name(
+        let buf2 = cmd_stage(&device, scratch_memory, cmd, indices, &self.indices)?;
+        buf2.name(
             device.handle(),
             &cx.debug_utils_loader,
             cstr::cstr!("Mesh Index Scratch Buffer"),
         )?;
-        Ok(())
+        Ok((buf1, buf2))
     }
 }
 

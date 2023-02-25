@@ -2,7 +2,18 @@ use ash::vk;
 use image::GenericImageView;
 use space_alloc::BuddyAllocation;
 
+use crate::{get_device, get_memory};
+
 use super::memory::{GpuAllocation, GpuMemory};
+
+/// Used for swapchains, whose images shouldn't be deleted by program code.
+/// Exactly equal to [GpuImage], except that the image is not destroyed on [Drop].
+#[derive(Debug)]
+pub struct DriverManagedGpuImage {
+    pub raw: vk::Image,
+    pub allocation: Option<GpuAllocation<BuddyAllocation>>,
+    pub info: vk::ImageCreateInfo,
+}
 
 #[derive(Debug)]
 pub struct GpuImage {
@@ -11,27 +22,33 @@ pub struct GpuImage {
     pub info: vk::ImageCreateInfo,
 }
 
-impl GpuImage {
-    pub unsafe fn destroy(self, device: &ash::Device, memory: &GpuMemory) -> anyhow::Result<()> {
-        if let Some(allocation) = self.allocation {
-            memory.free(&allocation)?;
+impl Drop for GpuImage {
+    fn drop(&mut self) {
+        unsafe {
+            log::debug!(
+                "dropped image handle {:?}\n{}",
+                self.raw,
+                std::backtrace::Backtrace::capture()
+            );
+            if let Some(allocation) = &self.allocation {
+                get_memory().free(allocation);
+            }
+            get_device().destroy_image(self.raw, None);
         }
-        device.destroy_image(self.raw, None);
-        Ok(())
     }
 }
 
 #[derive(Debug)]
-pub struct GpuTexture {
-    pub image: GpuImage,
+pub struct GpuTexture<Image = GpuImage> {
+    pub image: Image,
     pub view: vk::ImageView,
 }
 
-impl GpuTexture {
-    pub unsafe fn destroy(self, device: &ash::Device, memory: &GpuMemory) -> anyhow::Result<()> {
-        device.destroy_image_view(self.view, None);
-        self.image.destroy(device, memory)?;
-        Ok(())
+impl<Image> Drop for GpuTexture<Image> {
+    fn drop(&mut self) {
+        unsafe {
+            get_device().destroy_image_view(self.view, None);
+        }
     }
 }
 
