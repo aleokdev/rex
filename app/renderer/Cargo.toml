@@ -10,13 +10,13 @@ common = { path = "../common" }
 anyhow = "1.0.66"
 thiserror = "1.0"
 ash = { version = "0.37.0", features = ["linked"] }
-env_logger = "0.9.3"
+env_logger = "0.10.0"
 log = "0.4.17"
-winit = "0.27"
+winit = "0.28.1"
 ash-window = "0.12"
 raw-window-handle = "0.5"
 cstr = "0.2.11"
-glam = "0.22.0"
+glam = { version = "0.23.0", default-features = false }
 backtrace = "0.3"
 nonzero_ext = "0.3.0"
 tobj = "3.2.3"
