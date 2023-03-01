@@ -65,7 +65,7 @@ impl<Cell> GridChunk<Cell> {
 #[derive(Default, Serialize, Deserialize)]
 pub struct CartesianGrid<Cell: Default + Copy> {
     #[serde(bound = "Cell: Serialize + for<'ds> Deserialize<'ds>")]
-    #[serde(with = "crate::ser")]
+    #[serde(with = "crate::ser_map")]
     pub chunks: AHashMap<IVec2, GridChunk<Cell>>,
 }
 

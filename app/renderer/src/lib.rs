@@ -146,7 +146,8 @@ impl Renderer {
             &*memory,
             device.handle(),
             &get_debug_utils(),
-            (std::mem::size_of::<ModelUniform>() as u64)
+            // 1024 max objects
+            (std::mem::size_of::<ModelUniform>() as u64 * 1024)
                 .into_nonzero()
                 .unwrap(),
         )?;
@@ -174,7 +175,7 @@ impl Renderer {
                         .offset(model_uniform.offset())
                         .range(std::mem::size_of::<ModelUniform>() as u64)
                         .build()],
-                    vk::DescriptorType::UNIFORM_BUFFER,
+                    vk::DescriptorType::UNIFORM_BUFFER_DYNAMIC,
                     vk::ShaderStageFlags::VERTEX,
                 )
                 .build(cx, &mut ds_allocator, &mut ds_layout_cache)?;
@@ -456,13 +457,6 @@ impl Renderer {
             camera_dir: data.camera.forward().extend(0.),
         };
 
-        // Rotate at 1 sec / turn
-        // self.model_rotation += delta.as_secs_f32() * std::f32::consts::TAU;
-
-        let model_uniform = ModelUniform {
-            model: glam::Mat4::IDENTITY,
-        };
-
         let scratch = abs::memory::cmd_stage(
             &device,
             &mut frame.allocator,
@@ -473,17 +467,25 @@ impl Renderer {
         scratch.name(cstr::cstr!("Camera Uniform Scratch Buffer"))?;
         frame.deletion.push(Box::new(move || drop(scratch)));
 
+        let model_uniforms: Vec<_> = data
+            .objects
+            .iter()
+            .map(|obj| ModelUniform {
+                model: obj.transform,
+            })
+            .collect();
+
         let scratch = abs::memory::cmd_stage(
             &device,
             &mut frame.allocator,
             frame.cmd,
-            &[model_uniform],
+            &model_uniforms,
             &self.model_uniform,
         )?;
         scratch.name(cstr::cstr!("Model Uniform Scratch Buffer"))?;
         frame.deletion.push(Box::new(move || drop(scratch)));
 
-        // Insert a memory barrier to wait until the cube mesh and camera uniform have been uploaded.
+        // Insert a memory barrier to wait until the uniforms have been uploaded.
         abs::memory::cmd_stage_sync(&device, frame.cmd);
 
         // Begin a render pass:
@@ -517,7 +519,7 @@ impl Renderer {
             ash::vk::SubpassContents::INLINE,
         );
 
-        for object in data.objects.iter() {
+        for (object_idx, object) in data.objects.iter().enumerate() {
             let Some(mesh) = self.meshes.get(object.mesh_handle.0) else { continue};
 
             match &object.material {
@@ -540,7 +542,7 @@ impl Renderer {
                         self.flat_lit_pipeline_layout,
                         0,
                         &[self.world_uniform_set, self.model_uniform_set],
-                        &[],
+                        &[(std::mem::size_of::<ModelUniform>() * object_idx) as u32],
                     );
                 }
                 Material::TexturedLit { texture } => {
@@ -584,7 +586,8 @@ impl Renderer {
                             self.model_uniform_set,
                             texture_uniform_set,
                         ],
-                        &[],
+                        // FIXME: align offsets with minUniformBufferOffsetAlignment
+                        &[(std::mem::size_of::<ModelUniform>() * object_idx) as u32],
                     );
                 }
             }
@@ -675,7 +678,7 @@ impl Renderer {
             &*memory,
             device.handle(),
             &get_debug_utils(),
-            ((mesh.indices.len() * std::mem::size_of::<Vertex>()) as u64)
+            ((mesh.indices.len() * std::mem::size_of::<GpuIndex>()) as u64)
                 .into_nonzero()
                 .unwrap(),
         )?;

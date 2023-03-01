@@ -127,6 +127,7 @@ impl GpuMesh {
     }
 }
 
+#[derive(Clone, Copy)]
 pub struct GpuMeshHandle(pub(crate) usize);
 
 #[derive(Default, Clone)]

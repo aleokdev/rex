@@ -1,7 +1,7 @@
 //! The simplest possible example that does something.
 #![allow(clippy::unnecessary_wraps)]
 
-use std::{collections::HashMap, ops::ControlFlow, path::PathBuf, sync::mpsc, thread};
+use std::{collections::HashMap, hash::Hash, ops::ControlFlow, path::PathBuf, sync::mpsc, thread};
 
 use ggez::{
     conf::{WindowMode, WindowSetup},
@@ -13,6 +13,7 @@ use rex::{
     building::{DualNormalDirection, Room},
     glam::*,
     grid::RoomId,
+    node::RexFile,
 };
 
 enum MeshProducerData {
@@ -106,6 +107,34 @@ fn spawn_mesh_builder(nodes: Vec<rex::node::Node>) -> mpsc::Receiver<MeshProduce
                         build_room_mesh_walls(&mut builder, &v3data.database.rooms[room_id])
                             .unwrap()
                     });
+                    build_cells_mesh(
+                        &mut builder,
+                        v3data
+                            .database
+                            .rooms
+                            .iter()
+                            .flat_map(|room| room.cells.iter())
+                            .filter_map(|(pos, _file)| {
+                                pos.z
+                                    .eq(&floor_idx)
+                                    .then(|| (pos.truncate(), graphics::Color::WHITE))
+                            }),
+                    )
+                    .unwrap();
+                    build_cells_mesh(
+                        &mut builder,
+                        v3data
+                            .database
+                            .rooms
+                            .iter()
+                            .flat_map(|room| room.available_cells.iter())
+                            .filter_map(|pos| {
+                                pos.z
+                                    .eq(&floor_idx)
+                                    .then(|| (pos.truncate(), graphics::Color::GREEN))
+                            }),
+                    )
+                    .unwrap();
 
                     (floor_idx, builder)
                 })
@@ -130,6 +159,21 @@ fn build_room_mesh(
                 ((id * 483) % 256) as u8,
                 ((id * 773) % 256) as u8,
             ),
+        )?;
+    }
+
+    Ok(())
+}
+
+fn build_cells_mesh<'r>(
+    builder: &mut graphics::MeshBuilder,
+    files: impl Iterator<Item = (IVec2, graphics::Color)>,
+) -> anyhow::Result<()> {
+    for (pos, color) in files {
+        builder.rectangle(
+            graphics::DrawMode::fill(),
+            ggez::graphics::Rect::new(pos.x as f32 + 0.1, pos.y as f32 + 0.1, 0.8, 0.8),
+            color,
         )?;
     }
 

@@ -7,7 +7,7 @@ edition = "2021"
 
 [dependencies]
 anyhow = "1.0.66"
-ggez = { git = "https://github.com/ggez/ggez", rev = "f996359aa868410b2d1e0e1cd25385f3bb0be54d" }
+ggez = { git = "https://github.com/ggez/ggez", rev = "7d4de6809130f5720b02e7c61d9fb6c9da15f76e" }
 rex = { path = ".." }
 env_logger = "0.10.0"
 log = "0.4.17"

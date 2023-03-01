@@ -5,7 +5,7 @@ use std::collections::HashSet;
 
 use glam::{ivec3, vec3, Vec3};
 use renderer::{
-    abs::mesh::{self, CpuMesh},
+    abs::mesh::{self, CpuMesh, GpuMeshHandle, Vertex},
     get_device, get_instance, Camera, RenderData,
 };
 use rex::grid::RoomId;
@@ -24,6 +24,8 @@ struct App {
     pub render_data: RenderData,
     room_meshes_uploaded: HashSet<RoomId>,
     database: rex::Database,
+
+    uv_cube_handle: GpuMeshHandle,
 }
 
 impl App {
@@ -56,7 +58,7 @@ impl App {
         .0;
         models.extend(
             tobj::load_obj(
-                "app/res/uvcube.obj",
+                "app/res/file.obj",
                 &tobj::LoadOptions {
                     ignore_lines: true,
                     ignore_points: true,
@@ -69,6 +71,7 @@ impl App {
         );
 
         let texture = renderer.upload_image(image::open("app/res/unknown.png")?.into_rgb8());
+        let mut handles = Vec::new();
         for model in models {
             let mut mesh = model.mesh;
             if mesh.vertex_color.is_empty() {
@@ -93,9 +96,13 @@ impl App {
                 })
                 .collect::<Vec<_>>();
             let indices = mesh.indices;
+
+            let handle = renderer.upload_mesh(CpuMesh { vertices, indices });
+            handles.push(handle);
             render_data.objects.push(renderer::RenderObject {
-                mesh_handle: renderer.upload_mesh(CpuMesh { vertices, indices }),
+                mesh_handle: handle,
                 material: renderer::Material::TexturedLit { texture },
+                transform: glam::Mat4::IDENTITY,
             });
         }
 
@@ -106,6 +113,7 @@ impl App {
                     mesh_handle: renderer
                         .upload_mesh(meshgen::generate_room_mesh(&database, room_id)),
                     material: renderer::Material::FlatLit,
+                    transform: glam::Mat4::IDENTITY,
                 });
                 room_meshes_uploaded.insert(room_id);
                 if room_id % 100 == 0 {
@@ -116,9 +124,16 @@ impl App {
             render_data.objects.push(renderer::RenderObject {
                 mesh_handle: renderer.upload_mesh(meshgen::generate_room_mesh(&database, 0)),
                 material: renderer::Material::FlatLit,
+                transform: glam::Mat4::IDENTITY,
             });
             room_meshes_uploaded.insert(0);
         }
+
+        render_data.objects.push(renderer::RenderObject {
+            mesh_handle: *handles.last().unwrap(),
+            material: renderer::Material::FlatLit,
+            transform: glam::Mat4::IDENTITY,
+        });
 
         Ok(App {
             cx,
@@ -126,6 +141,8 @@ impl App {
             render_data,
             room_meshes_uploaded,
             database,
+
+            uv_cube_handle: *handles.last().unwrap(),
         })
     }
 
@@ -271,8 +288,19 @@ pub fn run(width: u32, height: u32) -> anyhow::Result<()> {
                                 .renderer
                                 .upload_mesh(meshgen::generate_room_mesh(&app.database, room_id)),
                             material: renderer::Material::FlatLit,
+                            transform: glam::Mat4::IDENTITY,
                         });
                         app.room_meshes_uploaded.insert(room_id);
+
+                        for (pos, _file) in app.database.rooms[room_id].cells.iter() {
+                            app.render_data.objects.push(renderer::RenderObject {
+                                mesh_handle: app.uv_cube_handle,
+                                material: renderer::Material::FlatLit,
+                                transform: glam::Mat4::from_translation(
+                                    pos.as_vec3() * vec3(1., 1., meshgen::LEVEL_HEIGHT),
+                                ),
+                            });
+                        }
                     }
                 }
                 app.cx.window.request_redraw();

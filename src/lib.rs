@@ -2,12 +2,13 @@ pub mod building;
 pub mod grid;
 pub mod math;
 pub mod node;
-pub mod ser;
+pub mod ser_map;
+pub mod ser_set;
 pub mod space;
 
 use building::{BuildingMap, DualNormalDirection, DualPiece, FloorIdx, FloorMap, Room};
 pub use glam;
-use node::{Node, NodeId};
+use node::{Node, NodeId, RexFile};
 use serde::{Deserialize, Serialize};
 
 use std::{collections::VecDeque, ops::ControlFlow};
@@ -88,6 +89,7 @@ impl V3 {
         let mut child_idx = 0;
         let mut first_child_idx_to_expand = 0;
         let mut num_of_children_to_expand = 0;
+        let mut rooms_touched = vec![room_id_being_expanded];
         while child_idx < nodes[node_idx].children.len() {
             while edge_positions.len() == 0 {
                 // Try to expand this room.
@@ -191,6 +193,7 @@ impl V3 {
                         floors.floor_entry(current_floor).or_default(),
                         std::iter::once((room_id_being_expanded, room_pos)),
                     );
+                    rooms_touched.push(room_id_being_expanded);
                 };
 
                 let floor = floors.floor_entry(current_floor).or_default();
@@ -229,8 +232,14 @@ impl V3 {
                     normal: door_normal,
                 },
             );
+            rooms[room_id_being_expanded]
+                .connections
+                .push(pos_allocated_from.extend(current_floor));
             // On child
             rooms[child_room].duals.insert(door_pos, DualPiece::Empty);
+            rooms[child_room]
+                .connections
+                .push(pos_allocated_to.extend(current_floor));
             if let Some(x) = edge_positions.pop() {
                 positions_to_expand_to.push(x);
             }
@@ -255,6 +264,60 @@ impl V3 {
                     (room_id, rooms[room_id].starting_pos().truncate())
                 }),
         );
+
+        // Once we have expanded all children, we can continue by placing all files that should be in the rooms we have
+        // created.
+        // First, we calculate which positions are available to place files in.
+        // To do this, we take all the cells we have expanded to, and remove cells that are part of paths from one door
+        // to another.
+        for room_id in rooms_touched {
+            let room = &mut rooms[room_id];
+            for (&floor_idx, _floor, cell_positions) in
+                floors.floors().filter_map(|(floor_idx, floor)| {
+                    floor
+                        .room_cell_positions()
+                        .get(&room_id)
+                        .map(|x| (floor_idx, floor, x))
+                })
+            {
+                let mut available_cells: AHashSet<IVec2> = cell_positions.clone();
+                for end in room.connections.iter() {
+                    if let Some((path, _)) = pathfinding::directed::astar::astar(
+                        &room.starting_pos().truncate(),
+                        |&pos| {
+                            [
+                                pos - IVec2::X,
+                                pos + IVec2::X,
+                                pos - IVec2::Y,
+                                pos + IVec2::Y,
+                            ]
+                            .into_iter()
+                            .map(|pos| (pos, if cell_positions.contains(&pos) { 1 } else { 50 }))
+                        },
+                        |pos| (pos.x - end.x) * (pos.x - end.x) + (pos.y - end.y) * (pos.y - end.y),
+                        |&pos| pos == end.truncate(),
+                    ) {
+                        for cell in path {
+                            available_cells.remove(&cell);
+                        }
+                    }
+                }
+                room.available_cells
+                    .extend(available_cells.into_iter().map(|x| x.extend(floor_idx)));
+            }
+
+            // TODO: Expand if cannot fit all files into allocated space
+            let positions_to_use: Vec<IVec3> = room
+                .available_cells
+                .iter()
+                .take(nodes[node_idx].files.len())
+                .copied()
+                .collect();
+            for (file, pos) in nodes[node_idx].files.iter().zip(positions_to_use.iter()) {
+                room.available_cells.remove(&pos);
+                room.cells.insert(*pos, file.clone());
+            }
+        }
 
         Self::calculate_walls(
             &mut rooms[room_id_being_expanded],
@@ -284,7 +347,8 @@ impl V3 {
         node_id: NodeId,
         starting_pos: IVec3,
     ) -> RoomId {
-        rooms.push(Room::new(node_id, starting_pos));
+        let mut room = Room::new(node_id, starting_pos);
+        rooms.push(room);
         let id = rooms.len() - 1;
         node_rooms.push(id);
         id

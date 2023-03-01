@@ -1,10 +1,12 @@
+use std::{ffi::OsString, path::PathBuf};
+
 use ahash::{AHashMap, AHashSet};
 use glam::{IVec2, IVec3};
 use serde::{Deserialize, Serialize};
 
 use crate::{
     grid::{CartesianRoomGrid, RoomId},
-    node::NodeId,
+    node::{NodeId, RexFile},
 };
 
 pub type FloorIdx = i32;
@@ -118,8 +120,23 @@ pub enum DualPiece {
 #[derive(Clone, Serialize, Deserialize)]
 pub struct Room {
     /// Walls, doors and anything that's stored in the dual grid space inside the room.
-    #[serde(with = "crate::ser")]
+    #[serde(with = "crate::ser_map")]
     pub duals: AHashMap<IVec3, DualPiece>,
+    #[serde(default)]
+    #[serde(skip_serializing_if = "std::collections::HashMap::is_empty")]
+    #[serde(with = "crate::ser_map")]
+    pub cells: AHashMap<IVec3, RexFile>,
+
+    /// Indicates cells that are available for placing files at. These are chosen to not interfere with paths that the
+    /// player might normally take (Paths between doors).
+    #[serde(default)]
+    #[serde(skip_serializing_if = "std::collections::HashSet::is_empty")]
+    #[serde(with = "crate::ser_set")]
+    pub available_cells: AHashSet<IVec3>,
+
+    /// Where this room has connections (e.g. door, window) with other rooms.
+    pub connections: Vec<IVec3>,
+
     node: NodeId,
     /// The position this room started expanding from.
     ///
@@ -133,6 +150,9 @@ impl Room {
             duals: Default::default(),
             node,
             starting_pos,
+            cells: Default::default(),
+            available_cells: Default::default(),
+            connections: Default::default(),
         }
     }
 

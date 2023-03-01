@@ -1,4 +1,5 @@
 use std::{
+    ffi::OsString,
     fs,
     path::{Path, PathBuf},
 };
@@ -8,11 +9,31 @@ use serde::{Deserialize, Serialize};
 pub type NodeId = usize;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct RexFile {
+    name: OsString,
+}
+
+impl RexFile {
+    pub fn new(name: OsString) -> Self {
+        Self { name }
+    }
+
+    pub fn name(&self) -> &OsString {
+        &self.name
+    }
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct Node {
     pub path: PathBuf,
     pub parent: Option<usize>,
+    #[serde(default)]
+    #[serde(skip_serializing_if = "Vec::is_empty")]
     pub children: Vec<usize>,
     pub rooms: Vec<usize>,
+    #[serde(default)]
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub files: Vec<RexFile>,
 }
 
 /// Returns a node and its children from a directory path.
@@ -24,9 +45,10 @@ pub fn generate_nodes(path: &Path) -> crate::Result<Vec<Node>> {
         parent: None,
         children: vec![],
         rooms: vec![],
+        files: vec![],
     }];
 
-    while let Some(node_being_processed) = to_process.pop() {
+    while let Some(mut node_being_processed) = to_process.pop() {
         let node_being_processed_idx = nodes.len();
 
         if let Some(parent) = node_being_processed.parent {
@@ -39,12 +61,17 @@ pub fn generate_nodes(path: &Path) -> crate::Result<Vec<Node>> {
                 for dir_entry in dir_entries {
                     let Ok(dir_entry) = dir_entry else { continue; };
 
-                    if dir_entry.file_type()?.is_dir() {
+                    let file_type = dir_entry.file_type()?;
+                    if file_type.is_dir() {
                         to_process.push(Node {
                             path: dir_entry.path(),
                             parent: Some(node_being_processed_idx),
-                            children: vec![],
-                            rooms: vec![],
+                            ..Default::default()
+                        });
+                    }
+                    if file_type.is_file() {
+                        node_being_processed.files.push(RexFile {
+                            name: dir_entry.file_name(),
                         });
                     }
                 }
