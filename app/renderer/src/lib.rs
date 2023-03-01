@@ -65,9 +65,6 @@ pub struct Renderer {
     pub texture_uniform_set_layout: vk::DescriptorSetLayout,
     pub sampler: vk::Sampler,
 
-    // TODO remove
-    pub model_rotation: f32,
-
     pub frames: [Option<Frame>; Self::FRAME_OVERLAP],
     pub deletion: Vec<Box<dyn FnOnce()>>,
 }
@@ -297,8 +294,6 @@ impl Renderer {
 
             sampler,
 
-            model_rotation: 0.,
-
             frames: [Some(Frame::new(cx)?), Some(Frame::new(cx)?)],
             deletion: vec![],
         })
@@ -465,7 +460,7 @@ impl Renderer {
         // self.model_rotation += delta.as_secs_f32() * std::f32::consts::TAU;
 
         let model_uniform = ModelUniform {
-            model: glam::Mat4::from_rotation_y(self.model_rotation),
+            model: glam::Mat4::IDENTITY,
         };
 
         let scratch = abs::memory::cmd_stage(
