@@ -22,6 +22,7 @@ use crate::abs::{
 };
 
 use abs::{
+    cmd::{Cmd, QueueExecutable},
     image::{GpuTexture, GpuTextureHandle},
     memory::GpuMemory,
     mesh::{CpuMesh, GpuIndex, GpuMeshHandle, Vertex},
@@ -397,31 +398,32 @@ impl Renderer {
                 .flags(ash::vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT),
         )?;
 
-        // Update viewport and scissor
-        device.cmd_set_viewport(
-            frame.cmd,
-            0,
-            &[*vk::Viewport::builder()
-                .width(cx.width as f32)
-                .height(cx.height as f32)
-                .min_depth(0.)
-                .max_depth(1.)],
-        );
-        device.cmd_set_scissor(
-            frame.cmd,
-            0,
-            &[*vk::Rect2D::builder().extent(vk::Extent2D {
+        let cmd = abs::cmd::Cmd {
+            buffer: frame.cmd,
+            deletion_queue: Vec::new(),
+        };
+
+        let commands = cmd
+            // Update viewport and scissor
+            .set_viewport(
+                *vk::Viewport::builder()
+                    .width(cx.width as f32)
+                    .height(cx.height as f32)
+                    .min_depth(0.)
+                    .max_depth(1.),
+            )
+            .set_scissor(*vk::Rect2D::builder().extent(vk::Extent2D {
                 width: cx.width,
                 height: cx.height,
-            })],
-        );
+            }));
+        let mut cmd = commands.queue();
 
         // Upload one mesh if available from the queue. We avoid uploading more than one per frame
         // so that we don't impact framerate, but that is a really hacky solution.
         // HACK: Measure frametime instead and upload as much as possible without sacrificing
         // framerate, or even better, use a different upload queue for the job.
         if let Some(mesh) = self.meshes_to_upload.pop_front() {
-            match Self::setup_mesh(cx, &mut self.arenas, &mut frame, &mesh) {
+            match Self::setup_mesh(cx, &mut self.arenas, &mut cmd, &mesh) {
                 Ok(gpu_mesh) => {
                     self.meshes.push(gpu_mesh);
                 }
@@ -470,31 +472,31 @@ impl Renderer {
 
         let scratch = abs::memory::cmd_stage(
             &device,
-            &mut frame.allocator,
-            frame.cmd,
+            &mut get_memory(),
+            cmd.buffer,
             &[world_uniform],
             &self.world_uniform,
         )?;
         scratch.name(cstr::cstr!("Camera Uniform Scratch Buffer"))?;
-        frame.deletion.push(Box::new(move || drop(scratch)));
+        cmd.deletion_queue.push(Box::new(move || drop(scratch)));
 
         let scratch = abs::memory::cmd_stage(
             &device,
-            &mut frame.allocator,
-            frame.cmd,
+            &mut get_memory(),
+            cmd.buffer,
             &[model_uniform],
             &self.model_uniform,
         )?;
         scratch.name(cstr::cstr!("Model Uniform Scratch Buffer"))?;
-        frame.deletion.push(Box::new(move || drop(scratch)));
+        cmd.deletion_queue.push(Box::new(move || drop(scratch)));
 
         // Insert a memory barrier to wait until the cube mesh and camera uniform have been uploaded.
-        abs::memory::cmd_stage_sync(&device, frame.cmd);
+        abs::memory::cmd_stage_sync(&device, cmd.buffer);
 
         // Begin a render pass:
         //      We clear the whole frame with black.
         device.cmd_begin_render_pass(
-            frame.cmd,
+            cmd.buffer,
             &ash::vk::RenderPassBeginInfo::builder()
                 .clear_values(&[
                     ash::vk::ClearValue {
@@ -651,9 +653,9 @@ impl Renderer {
     unsafe fn setup_mesh(
         cx: &mut abs::Cx,
         arenas: &mut Arenas,
-        frame: &mut Frame,
+        cmd: Cmd,
         mesh: &CpuMesh,
-    ) -> anyhow::Result<abs::mesh::GpuMesh> {
+    ) -> anyhow::Result<(abs::mesh::GpuMesh, Cmd)> {
         assert_ne!(mesh.vertices.len(), 0, "mesh must not be empty");
         let device = get_device();
         let gpu_format_vertices = mesh
@@ -693,13 +695,13 @@ impl Renderer {
 
         let scratch = gpu_mesh.upload(
             cx,
-            &mut frame.allocator,
-            frame.cmd,
+            &mut get_memory(),
+            cmd.buffer,
             &gpu_format_vertices,
             &mesh.indices,
         )?;
 
-        frame.deletion.push(Box::new(move || drop(scratch)));
+        cmd.deletion_queue.push(Box::new(move || drop(scratch)));
 
         Ok(gpu_mesh)
     }

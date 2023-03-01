@@ -1,4 +1,5 @@
 pub mod buffer;
+pub mod cmd;
 pub mod cx;
 pub mod descriptor;
 pub mod image;

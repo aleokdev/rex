@@ -13,7 +13,6 @@ pub struct Frame {
     pub render_fence: vk::Fence,
     pub cmd_pool: vk::CommandPool,
     pub cmd: vk::CommandBuffer,
-    pub allocator: abs::memory::GpuMemory,
     pub deletion: Vec<Box<dyn FnOnce()>>,
     pub ds_allocator: abs::descriptor::DescriptorAllocator,
 
@@ -51,7 +50,6 @@ impl Frame {
             render_fence,
             cmd_pool,
             cmd,
-            allocator: abs::memory::GpuMemory::new(&device, &get_instance(), cx.physical_device)?,
             deletion: vec![],
             ds_allocator: DescriptorAllocator::new(device.clone()),
 
