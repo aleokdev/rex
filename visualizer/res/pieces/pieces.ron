@@ -1,0 +1,124 @@
+[
+    {
+        name: "wall",
+        sets: ["wall"],
+        rotatable: false,
+        flippable: false,
+        image: {
+            path: "img/tileset.png",
+            source: {
+                x: 0,
+                y: 0,
+                w: 8,
+                h: 8
+            },
+            target: {
+                x: 0,
+                y: 0,
+                w: 1,
+                h: 1
+            }
+        },
+        default_state: Skip,
+        rules: [
+            // Do not allow connecting directly to other rooms.
+            Rule {
+                any_of: [
+                    {
+                        at: AnyAdjacentInXYPlane,
+                        in_sets: ["floor"]
+                    }
+                ],
+                then: Place,
+            }
+        ],
+        priority: 0,
+        size: {
+            w: 1,
+            d: 1,
+            h: 4,
+        }
+    },
+    {
+        name: "3x3 floor",
+        sets: ["floor"],
+        rotatable: false,
+        flippable: false,
+        image: {
+            path: "img/tileset.png",
+            source: {
+                x = 8,
+                y = 8,
+                w = 8,
+                h = 8
+            },
+            target: {
+                x = 0,
+                y = 0,
+                w = 3,
+                h = 3
+            }
+        },
+        rules: [
+            // Do not allow connecting directly to other rooms.
+            Rule {
+                any_of: [
+                    {
+                        at: AnyAdjacentInXYPlane,
+                        not_in_set: "this_room"
+                    }
+                ],
+                then: Skip,
+            }
+        ],
+        priority: 5,
+        size: {
+            w: 3,
+            d: 3,
+            h: 1
+        }
+    },
+    {
+        name: "door",
+        sets: ["door"],
+        rotatable: true,
+        flippable: false,
+        image: {
+            path: "img/tileset.png",
+            source: {
+                x = 0,
+                y = 8,
+                w = 8,
+                h = 8
+            },
+            target: {
+                x = 0,
+                y = 0,
+                w = 1,
+                h = 1
+            }
+        },
+        default_state: Skip,
+        rules: [
+            Rule {
+                all_of: [
+                    {
+                        at: South,
+                        in_sets: ["floor", "this_room"]
+                    },
+                    {
+                        at: EastOrWest,
+                        not_in_set: "door"
+                    }
+                ],
+                then: Place,
+            }
+        ],
+        priority: 5,
+        size: {
+            w: 1,
+            d: 1,
+            h: 3
+        }
+    }
+]

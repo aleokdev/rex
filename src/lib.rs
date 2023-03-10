@@ -1,6 +1,7 @@
 pub mod building;
 pub mod grid;
 pub mod math;
+pub mod new;
 pub mod node;
 pub mod ser_map;
 pub mod ser_set;
