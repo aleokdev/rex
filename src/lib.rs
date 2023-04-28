@@ -1,11 +1,11 @@
 pub mod building;
 pub mod grid;
 pub mod math;
-pub mod new;
 pub mod node;
 pub mod ser_map;
 pub mod ser_set;
 pub mod space;
+pub mod wfc;
 
 use building::{BuildingMap, DualNormalDirection, DualPiece, FloorIdx, FloorMap, Room};
 pub use glam;

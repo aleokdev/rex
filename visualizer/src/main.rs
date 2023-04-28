@@ -1,23 +1,52 @@
 //! The simplest possible example that does something.
 #![allow(clippy::unnecessary_wraps)]
 
-use std::{collections::HashMap, hash::Hash, ops::ControlFlow, path::PathBuf, sync::mpsc, thread};
+use std::{
+    collections::HashMap, hash::Hash, ops::ControlFlow, path::PathBuf, sync::mpsc, thread,
+    time::Duration,
+};
 
 use ggez::{
     conf::{WindowMode, WindowSetup},
     event,
-    graphics::{self, Rect},
+    graphics::{self, MeshData, Rect, Vertex},
     input, Context,
 };
 use rex::{
     building::{DualNormalDirection, Room},
     glam::*,
     grid::RoomId,
-    node::RexFile,
+    wfc::PieceId,
 };
 
+#[derive(Default, Clone)]
+struct OwnedMeshData {
+    /// List of vertices.
+    pub vertices: Vec<graphics::Vertex>,
+    /// List of indices (indices into `vertices`).
+    pub indices: Vec<u32>,
+}
+
+impl OwnedMeshData {
+    pub fn data<'a>(&'a self) -> MeshData<'a> {
+        MeshData {
+            vertices: &self.vertices,
+            indices: &self.indices,
+        }
+    }
+}
+
+impl From<MeshData<'_>> for OwnedMeshData {
+    fn from(value: MeshData) -> Self {
+        OwnedMeshData {
+            vertices: value.vertices.into(),
+            indices: value.indices.into(),
+        }
+    }
+}
+
 enum MeshProducerData {
-    OnlyFloor0(graphics::MeshBuilder),
+    OnlyFloor0(OwnedMeshData),
     All {
         database: rex::Database,
         meshes: HashMap<i32, graphics::MeshBuilder>,
@@ -32,10 +61,11 @@ struct MainState {
     nodes: Vec<rex::node::Node>,
     current_floor: i32,
     database: Option<rex::Database>,
+    tileset: graphics::Image,
 }
 
 impl MainState {
-    fn new(path: &std::path::Path, _ctx: &mut Context) -> anyhow::Result<MainState> {
+    fn new(path: &std::path::Path, ctx: &mut Context) -> anyhow::Result<MainState> {
         let nodes = rex::node::generate_nodes(path)?;
         let rx = spawn_mesh_builder(nodes.clone());
 
@@ -47,6 +77,7 @@ impl MainState {
             nodes,
             current_floor: 0,
             database: None,
+            tileset: graphics::Image::from_path(&ctx.gfx, "/res/debug.png")?,
         })
     }
 }
@@ -56,94 +87,92 @@ fn spawn_mesh_builder(nodes: Vec<rex::node::Node>) -> mpsc::Receiver<MeshProduce
     thread::spawn(move || {
         let start = std::time::Instant::now();
 
-        let mut v3 = rex::V3::new(nodes.clone());
-        let mut rng = rand::thread_rng();
-        let mut iterations = 0;
+        let mut wfc = rex::wfc::V5::new(nodes);
 
-        let v3data = loop {
-            match v3.iterate(&mut rng) {
-                ControlFlow::Break(database) => break database,
-                ControlFlow::Continue(cont) => v3 = cont,
-            }
-
-            if iterations % 500 == 0 {
-                let mut builder = graphics::MeshBuilder::new();
-                build_room_mesh(
-                    &mut builder,
-                    v3.database()
-                        .map
-                        .floor(0)
-                        .unwrap()
-                        .grid()
-                        .cells()
-                        .filter_map(|(pos, &cell)| cell.map(|id| (IVec2::new(pos.x, pos.y), id))),
-                )
-                .unwrap();
-                tx.send(MeshProducerData::OnlyFloor0(builder)).unwrap();
-            }
-
-            iterations += 1;
-        };
-        log::info!(
-            "Total stats: Teleports used: {}. Took {:.3}s.",
-            v3data.teleports_used,
-            (std::time::Instant::now() - start).as_secs_f32()
-        );
-        tx.send(MeshProducerData::All {
-            meshes: v3data
-                .database
-                .map
-                .floors()
-                .map(|(&floor_idx, map)| {
-                    let mut builder = graphics::MeshBuilder::new();
-                    build_room_mesh(
-                        &mut builder,
-                        map.grid().cells().filter_map(|(pos, &cell)| {
-                            cell.map(|id| (IVec2::new(pos.x, pos.y), id))
-                        }),
-                    )
-                    .unwrap();
-                    map.room_cell_positions().keys().for_each(|&room_id| {
-                        build_room_mesh_walls(&mut builder, &v3data.database.rooms[room_id])
-                            .unwrap()
-                    });
-                    build_cells_mesh(
-                        &mut builder,
-                        v3data
-                            .database
-                            .rooms
-                            .iter()
-                            .flat_map(|room| room.cells.iter())
-                            .filter_map(|(pos, _file)| {
-                                pos.z
-                                    .eq(&floor_idx)
-                                    .then(|| (pos.truncate(), graphics::Color::WHITE))
-                            }),
-                    )
-                    .unwrap();
-                    build_cells_mesh(
-                        &mut builder,
-                        v3data
-                            .database
-                            .rooms
-                            .iter()
-                            .flat_map(|room| room.available_cells.iter())
-                            .filter_map(|pos| {
-                                pos.z
-                                    .eq(&floor_idx)
-                                    .then(|| (pos.truncate(), graphics::Color::GREEN))
-                            }),
-                    )
-                    .unwrap();
-
-                    (floor_idx, builder)
-                })
-                .collect(),
-            database: v3data.database,
-        })
-        .unwrap();
+        loop {
+            wfc.step();
+            tx.send(MeshProducerData::OnlyFloor0(
+                build_map_mesh(&wfc.map, 0).unwrap(),
+            ))
+            .unwrap();
+            std::thread::sleep(Duration::from_millis(100))
+        }
     });
     rx
+}
+
+fn build_map_mesh(
+    map: &rex::wfc::tilemap::TileMap3D<rex::wfc::WfcCell>,
+    z: i32,
+) -> anyhow::Result<OwnedMeshData> {
+    let build_rect = |data: &mut OwnedMeshData, pos: Vec2, uv: Rect, color: [f32; 4]| {
+        let uv_from = Vec2::from(uv.point());
+        let uv_to = uv_from + Vec2::new(uv.w, uv.h);
+        let vertices = [
+            Vertex {
+                color,
+                position: pos.to_array(),
+                uv: uv_from.to_array(),
+            },
+            Vertex {
+                color,
+                position: (pos + Vec2::X).to_array(),
+                uv: Vec2::new(uv_to.x, uv_from.y).to_array(),
+            },
+            Vertex {
+                color,
+                position: (pos + Vec2::Y).to_array(),
+                uv: Vec2::new(uv_from.x, uv_to.y).to_array(),
+            },
+            Vertex {
+                color,
+                position: (pos + Vec2::ONE).to_array(),
+                uv: uv_to.to_array(),
+            },
+        ];
+        let start = data.vertices.len();
+        let indices = [0, 2, 1, 2, 3, 1].map(|x| x + start as u32);
+        data.vertices.extend(vertices);
+        data.indices.extend(indices);
+    };
+    let piece_uv = |id: PieceId| match id.0 {
+        0 => Rect::new(0.5, 0., 0.5, 0.5),
+        1 => Rect::new(0., 0., 0.5, 0.5),
+        2 => Rect::new(0., 0.5, 0.5, 0.5),
+        3 => Rect::new(0.5, 0.5, 0.5, 0.5),
+        _ => unreachable!(),
+    };
+    let mut data = OwnedMeshData::default();
+    for (pos, cell) in map.cells() {
+        if pos.z == z {
+            match cell {
+                rex::wfc::WfcCell::Undiscovered => build_rect(
+                    &mut data,
+                    pos.truncate().as_vec2(),
+                    Rect::new(0., 1., 0., 0.),
+                    [0.4, 0.4, 0.4, 1.],
+                ),
+                rex::wfc::WfcCell::Uncollapsed(uncollapsed) => {
+                    for allowed in uncollapsed.iter_allowed(4) {
+                        build_rect(
+                            &mut data,
+                            pos.truncate().as_vec2(),
+                            piece_uv(allowed),
+                            [1., 1., 1., 0.5],
+                        )
+                    }
+                }
+                &rex::wfc::WfcCell::Collapsed(piece) => build_rect(
+                    &mut data,
+                    pos.truncate().as_vec2(),
+                    piece_uv(piece),
+                    [1.; 4],
+                ),
+            };
+        }
+    }
+
+    Ok(data)
 }
 
 fn build_room_mesh(
@@ -239,7 +268,7 @@ impl event::EventHandler<anyhow::Error> for MainState {
             match rx.try_recv() {
                 Ok(MeshProducerData::OnlyFloor0(floor0)) => {
                     self.meshes =
-                        HashMap::from_iter([(0, graphics::Mesh::from_data(ctx, floor0.build()))])
+                        HashMap::from_iter([(0, graphics::Mesh::from_data(ctx, floor0.data()))])
                 }
                 Ok(MeshProducerData::All { meshes, database }) => {
                     self.meshes = HashMap::from_iter(meshes.iter().map(|(&floor_idx, builder)| {
@@ -316,8 +345,9 @@ impl event::EventHandler<anyhow::Error> for MainState {
         let mut white = 55;
         for floor_idx in self.current_floor - 1..=self.current_floor {
             if let Some(floor_mesh) = self.meshes.get(&floor_idx) {
-                canvas.draw(
-                    floor_mesh,
+                canvas.draw_textured_mesh(
+                    floor_mesh.clone(),
+                    self.tileset.clone(),
                     graphics::DrawParam::new()
                         .color(graphics::Color::from_rgb(white, white, white)),
                 );
@@ -436,7 +466,8 @@ pub fn main() -> anyhow::Result<()> {
     env_logger::init();
     let cb = ggez::ContextBuilder::new("rexvis", "aleok")
         .window_mode(WindowMode::default().dimensions(1080., 720.))
-        .window_setup(WindowSetup::default().title("Rex Visualization & Generation Tool"));
+        .window_setup(WindowSetup::default().title("Rex Visualization & Generation Tool"))
+        .add_resource_path(env!("CARGO_MANIFEST_DIR"));
     let (mut ctx, event_loop) = cb.build()?;
     let state = MainState::new(
         &std::env::args()
