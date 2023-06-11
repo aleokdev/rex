@@ -1,8 +1,12 @@
 use anyhow::Result;
+use bytemuck::{Pod, Zeroable};
+use crevice::std140::AsStd140;
 use futures::executor::block_on;
+use phobos::vk::{AttachmentLoadOp, ClearDepthStencilValue, CompareOp, IndexType};
 use phobos::{pool::ResourcePool, prelude::*};
-use std::fs;
+use std::cell::OnceCell;
 use std::fs::File;
+use std::fs::{self, read_to_string};
 use std::io::{Read, Write};
 use std::path::Path;
 
@@ -22,6 +26,10 @@ use phobos::prelude::*;
 use phobos::sync::domain::All;
 use phobos::sync::submit_batch::SubmitBatch;
 use phobos::{image, vk};
+
+use egui_winit_phobos::Integration as EguiIntegration;
+
+const SHADER_COMPILER: OnceCell<shaderc::Compiler> = OnceCell::new();
 
 pub fn staged_buffer_upload<T: Copy>(
     mut ctx: Context,
@@ -66,6 +74,21 @@ pub fn load_spirv_file(path: &Path) -> Vec<u32> {
     Vec::from(binary)
 }
 
+pub fn compile_glsl_file(path: &Path, kind: shaderc::ShaderKind) -> Vec<u32> {
+    SHADER_COMPILER
+        .get_or_init(|| shaderc::Compiler::new().expect("new shaderc compiler"))
+        .compile_into_spirv(
+            &read_to_string(path).expect("read file"),
+            kind,
+            path.file_name().unwrap().to_str().unwrap(),
+            "main",
+            None,
+        )
+        .expect("compile glsl")
+        .as_binary()
+        .to_owned()
+}
+
 pub struct VulkanContext {
     pub frame: Option<FrameManager>,
     pub pool: ResourcePool,
@@ -81,8 +104,13 @@ pub struct VulkanContext {
 struct Resources {
     pub offscreen: Image,
     pub offscreen_view: ImageView,
+    pub depth: Image,
+    pub depth_view: ImageView,
+    pub ui: Image,
+    pub ui_view: ImageView,
     pub sampler: Sampler,
     pub vertex_buffer: Buffer,
+    pub index_buffer: Buffer,
 }
 
 #[derive(Clone)]
@@ -108,7 +136,7 @@ impl WindowContext {
         let event_loop = EventLoopBuilder::new().build();
         let window = WindowBuilder::new()
             .with_title(title)
-            .with_inner_size(winit::dpi::LogicalSize::new(width, height))
+            .with_inner_size(winit::dpi::PhysicalSize::new(width, height))
             .build(&event_loop)?;
         Ok(Self { event_loop, window })
     }
@@ -116,45 +144,54 @@ impl WindowContext {
 
 struct App {
     resources: Resources,
+    egui: EguiIntegration<DefaultAllocator>,
+    time: f32,
 }
 
 impl App {
-    fn new(mut ctx: Context) -> anyhow::Result<Self>
+    fn new(mut ctx: Context, event_loop: &EventLoop<()>) -> anyhow::Result<Self>
     where
         Self: Sized,
     {
         // create some pipelines
         // First, we need to load shaders
-        let vtx_code = load_spirv_file(Path::new("data/vert.spv"));
-        let frag_code = load_spirv_file(Path::new("data/frag.spv"));
-
+        // let vtx_code = load_spirv_file(Path::new("data/vert.spv"));
+        // let frag_code = load_spirv_file(Path::new("data/frag.spv"));
+        let vtx_code = compile_glsl_file(Path::new("data/cube.vert"), shaderc::ShaderKind::Vertex);
+        let frag_code =
+            compile_glsl_file(Path::new("data/cube.frag"), shaderc::ShaderKind::Fragment);
         let vertex = ShaderCreateInfo::from_spirv(vk::ShaderStageFlags::VERTEX, vtx_code);
-        let fragment = ShaderCreateInfo::from_spirv(vk::ShaderStageFlags::FRAGMENT, frag_code);
-
-        // Now we can start using the pipeline builder to create our full pipeline.
-        let pci = PipelineBuilder::new("sample".to_string())
-            .vertex_input(0, vk::VertexInputRate::VERTEX)
-            .vertex_attribute(0, 0, vk::Format::R32G32_SFLOAT)?
-            .vertex_attribute(0, 1, vk::Format::R32G32_SFLOAT)?
-            .dynamic_states(&[vk::DynamicState::VIEWPORT, vk::DynamicState::SCISSOR])
-            .blend_attachment_none()
-            .cull_mask(vk::CullModeFlags::NONE)
-            .attach_shader(vertex.clone())
-            .attach_shader(fragment)
-            .build();
-
-        // Store the pipeline in the pipeline cache
-        ctx.pool.pipelines.create_named_pipeline(pci)?;
-
-        let frag_code = load_spirv_file(Path::new("data/blue.spv"));
         let fragment = ShaderCreateInfo::from_spirv(vk::ShaderStageFlags::FRAGMENT, frag_code);
 
         let pci = PipelineBuilder::new("offscreen".to_string())
             .vertex_input(0, vk::VertexInputRate::VERTEX)
-            .vertex_attribute(0, 0, vk::Format::R32G32_SFLOAT)?
-            .vertex_attribute(0, 1, vk::Format::R32G32_SFLOAT)?
+            .vertex_attribute(0, 0, vk::Format::R32G32B32_SFLOAT)?
+            .vertex_attribute(0, 1, vk::Format::R32G32B32_SFLOAT)?
+            .vertex_attribute(0, 2, vk::Format::R32G32_SFLOAT)?
             .dynamic_states(&[vk::DynamicState::VIEWPORT, vk::DynamicState::SCISSOR])
+            .depth(true, true, false, CompareOp::LESS)
             .blend_attachment_none()
+            .cull_mask(vk::CullModeFlags::NONE)
+            .attach_shader(vertex)
+            .attach_shader(fragment)
+            .build();
+        ctx.pool.pipelines.create_named_pipeline(pci)?;
+
+        let vtx_code = compile_glsl_file(Path::new("data/comp.vert"), shaderc::ShaderKind::Vertex);
+        let frag_code =
+            compile_glsl_file(Path::new("data/comp.frag"), shaderc::ShaderKind::Fragment);
+        let vertex = ShaderCreateInfo::from_spirv(vk::ShaderStageFlags::VERTEX, vtx_code);
+        let fragment = ShaderCreateInfo::from_spirv(vk::ShaderStageFlags::FRAGMENT, frag_code);
+
+        let pci = PipelineBuilder::new("composite".to_string())
+            .vertex_input(0, vk::VertexInputRate::VERTEX)
+            .dynamic_states(&[vk::DynamicState::VIEWPORT, vk::DynamicState::SCISSOR])
+            .blend_additive_unmasked(
+                vk::BlendFactor::SRC_ALPHA,
+                vk::BlendFactor::ONE_MINUS_SRC_ALPHA,
+                vk::BlendFactor::ONE,
+                vk::BlendFactor::ZERO,
+            )
             .cull_mask(vk::CullModeFlags::NONE)
             .attach_shader(vertex)
             .attach_shader(fragment)
@@ -171,97 +208,207 @@ impl App {
             vk::Format::R8G8B8A8_SRGB,
             vk::SampleCountFlags::TYPE_1,
         )?;
-        let data: Vec<f32> = vec![
-            -1.0, 1.0, 0.0, 1.0, -1.0, -1.0, 0.0, 0.0, 1.0, -1.0, 1.0, 0.0, -1.0, 1.0, 0.0, 1.0,
-            1.0, -1.0, 1.0, 0.0, 1.0, 1.0, 1.0, 1.0,
-        ];
+
+        let ui = Image::new(
+            ctx.device.clone(),
+            &mut ctx.allocator,
+            800,
+            600,
+            vk::ImageUsageFlags::COLOR_ATTACHMENT | vk::ImageUsageFlags::SAMPLED,
+            vk::Format::R8G8B8A8_SRGB,
+            vk::SampleCountFlags::TYPE_1,
+        )?;
+
+        let depth = Image::new(
+            ctx.device.clone(),
+            &mut ctx.allocator,
+            800,
+            600,
+            vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT,
+            vk::Format::D32_SFLOAT,
+            vk::SampleCountFlags::TYPE_1,
+        )?;
+
+        #[repr(C)]
+        #[derive(Copy, Clone, Pod, Zeroable)]
+        struct GpuVertex {
+            pub pos: [f32; 3],
+            pub normal: [f32; 3],
+            pub uv: [f32; 2],
+        }
+
+        // bleeding edge advanced GLTF mesh importer
+        let (doc, bufs, images) = gltf::import("data/cube.gltf")?;
+        let primitive0 = doc.meshes().next().unwrap().primitives().next().unwrap();
+        let mesh_reader = primitive0.reader(|b| Some(&bufs[b.index()].0));
+        let verts: Vec<_> = mesh_reader
+            .read_positions()
+            .unwrap()
+            .zip(mesh_reader.read_normals().unwrap())
+            .zip(mesh_reader.read_tex_coords(0).unwrap().into_f32())
+            .map(|((pos, normal), uv)| GpuVertex { pos, normal, uv })
+            .collect();
+        let inds: Vec<_> = mesh_reader.read_indices().unwrap().into_u32().collect();
 
         let resources = Resources {
             offscreen_view: image.view(vk::ImageAspectFlags::COLOR)?,
             offscreen: image,
+            depth_view: depth.view(vk::ImageAspectFlags::DEPTH)?,
+            depth,
+            ui_view: ui.view(vk::ImageAspectFlags::COLOR)?,
+            ui,
             sampler: Sampler::default(ctx.device.clone())?,
             vertex_buffer: staged_buffer_upload(
                 ctx.clone(),
-                data.as_slice(),
+                &verts,
                 vk::BufferUsageFlags::VERTEX_BUFFER,
+            )?,
+            index_buffer: staged_buffer_upload(
+                ctx.clone(),
+                inds.as_slice(),
+                vk::BufferUsageFlags::INDEX_BUFFER,
             )?,
         };
 
-        Ok(Self { resources })
+        let egui = EguiIntegration::new(
+            800,
+            600,
+            1.0,
+            &event_loop,
+            Default::default(),
+            Default::default(),
+            ctx.device.clone(),
+            ctx.allocator.clone(),
+            ctx.exec.clone(),
+            ctx.pool.pipelines.clone(),
+        )?;
+
+        Ok(Self {
+            resources,
+            egui,
+            time: 0.,
+        })
     }
 
-    fn frame(&mut self, ctx: Context, ifc: InFlightContext) -> anyhow::Result<SubmitBatch<All>> {
+    fn frame(
+        &mut self,
+        ctx: Context,
+        ifc: InFlightContext,
+        ui_data: egui::FullOutput,
+    ) -> anyhow::Result<SubmitBatch<All>> {
         // Define a virtual resource pointing to the swapchain
-        let swap_resource = image!("swapchain");
-        let offscreen = image!("offscreen");
-
-        let vertices: Vec<f32> = vec![
-            -1.0, 1.0, 0.0, 1.0, -1.0, -1.0, 0.0, 0.0, 1.0, -1.0, 1.0, 0.0, -1.0, 1.0, 0.0, 1.0,
-            1.0, -1.0, 1.0, 0.0, 1.0, 1.0, 1.0, 1.0,
-        ];
+        let swap = image!("swapchain");
+        let color = image!("color");
+        let depth = image!("depth");
+        let ui = image!("ui");
 
         // Define a render graph with one pass that clears the swapchain image
         let graph = PassGraph::new();
 
         let mut pool = LocalPool::new(ctx.pool.clone())?;
 
+        #[derive(AsStd140)]
+        struct Uniforms {
+            pub mvp: mint::ColumnMatrix4<f32>,
+            pub normal: mint::ColumnMatrix4<f32>,
+        }
+
+        self.time += 0.01; // dt? whats that
+
         // Render pass that renders to an offscreen attachment
         let offscreen_pass = PassBuilder::render("offscreen")
             .color([1.0, 0.0, 0.0, 1.0])
-            .clear_color_attachment(&offscreen, ClearColor::Float([0.0, 0.0, 0.0, 0.0]))?
+            .clear_color_attachment(&color, ClearColor::Float([0.0, 0.0, 0.0, 1.0]))?
+            .clear_depth_attachment(
+                &depth,
+                ClearDepthStencil {
+                    depth: 1.,
+                    stencil: 0,
+                },
+            )?
             .execute_fn(|mut cmd, ifc, _bindings, _| {
+                let model = Mat4::from_rotation_x(self.time);
+                let uniforms = Uniforms {
+                    mvp: (Mat4::perspective_rh(60.0f32.to_radians(), 800.0 / 600.0, 0.1, 100.0)
+                        * Mat4::look_at_rh(
+                            Vec3::new(2.0, -2.0, 2.0),
+                            Vec3::ZERO,
+                            Vec3::new(0.0, -1.0, 0.0),
+                        )
+                        * model)
+                        .into(),
+                    normal: model.inverse().transpose().into(),
+                };
+                let mut scratch = ifc.allocate_scratch_ubo(Uniforms::std140_size_static() as _)?;
+                scratch
+                    .mapped_slice()?
+                    .copy_from_slice(uniforms.as_std140().as_bytes());
+
                 // Our pass will render a fullscreen quad that 'clears' the screen, just so we can test pipeline creation
-                let mut buffer = ifc.allocate_scratch_vbo(
-                    (vertices.len() * std::mem::size_of::<f32>()) as vk::DeviceSize,
-                )?;
-                let slice = buffer.mapped_slice::<f32>()?;
-                slice.copy_from_slice(vertices.as_slice());
                 cmd = cmd
-                    .bind_vertex_buffer(0, &buffer)
+                    .bind_vertex_buffer(0, &self.resources.vertex_buffer.view_full())
+                    .bind_index_buffer(&self.resources.index_buffer.view_full(), IndexType::UINT32)
                     .bind_graphics_pipeline("offscreen")?
+                    .bind_uniform_buffer(0, 0, &scratch)?
                     .full_viewport_scissor()
-                    .draw(6, 1, 0, 0)?;
+                    .draw_indexed(36, 1, 0, 0, 0)?;
                 Ok(cmd)
             })
             .build();
 
-        // Render pass that samples the offscreen attachment, and possibly does some postprocessing to it
-        let sample_pass = PassBuilder::render(String::from("sample"))
+        let egui_pass = self.egui.paint(
+            &[],
+            &ui,
+            AttachmentLoadOp::CLEAR,
+            Some(vk::ClearColorValue {
+                float32: [0.0, 0.0, 0.0, 0.0],
+            }),
+            self.egui.context().tessellate(ui_data.shapes),
+            ui_data.textures_delta,
+        )?;
+
+        let composite_pass = PassBuilder::render("composite")
             .color([0.0, 1.0, 0.0, 1.0])
-            .clear_color_attachment(&swap_resource, ClearColor::Float([0.0, 0.0, 0.0, 0.0]))?
-            .sample_image(
-                offscreen_pass.output(&offscreen).unwrap(),
-                PipelineStage::FRAGMENT_SHADER,
-            )
-            .execute_fn(|cmd, _ifc, bindings, _| {
-                cmd.full_viewport_scissor()
-                    .bind_graphics_pipeline("sample")?
+            .clear_color_attachment(&swap, ClearColor::Float([0.0, 0.0, 0.0, 1.0]))?
+            .sample_image(&color, vk::PipelineStageFlags2::FRAGMENT_SHADER)
+            .sample_image(&ui, vk::PipelineStageFlags2::FRAGMENT_SHADER)
+            .execute_fn(|mut cmd, ifc, bindings, _| {
+                cmd = cmd
+                    .bind_graphics_pipeline("composite")?
+                    .full_viewport_scissor()
                     .resolve_and_bind_sampled_image(
                         0,
                         0,
-                        &offscreen,
+                        &color,
                         &self.resources.sampler,
                         bindings,
                     )?
-                    .draw(6, 1, 0, 0)
+                    .draw(3, 1, 0, 0)?
+                    .resolve_and_bind_sampled_image(0, 0, &ui, &self.resources.sampler, bindings)?
+                    .draw(3, 1, 0, 0)?;
+                Ok(cmd)
             })
             .build();
+
         // Add another pass to handle presentation to the screen
         let present_pass = PassBuilder::present(
             "present",
             // This pass uses the output from the clear pass on the swap resource as its input
-            sample_pass.output(&swap_resource).unwrap(),
+            composite_pass.output(&swap).unwrap(),
         );
         let mut graph = graph
             .add_pass(offscreen_pass)?
-            .add_pass(sample_pass)?
+            .add_pass(egui_pass)?
+            .add_pass(composite_pass)?
             .add_pass(present_pass)?
             // Build the graph, now we can bind physical resources and use it.
             .build()?;
 
         let mut bindings = PhysicalResourceBindings::new();
         bindings.bind_image("swapchain", &ifc.swapchain_image);
-        bindings.bind_image("offscreen", &self.resources.offscreen_view);
+        bindings.bind_image("color", &self.resources.offscreen_view);
+        bindings.bind_image("depth", &self.resources.depth_view);
+        bindings.bind_image("ui", &self.resources.ui_view);
         // create a command buffer capable of executing graphics commands
         let cmd = ctx.exec.on_domain::<All>().unwrap();
         // record render graph to this command buffer
@@ -278,8 +425,29 @@ impl App {
         bail!("run() not implemented for headless example app");
     }
 
-    fn handle_event(&mut self, _event: &Event<()>) -> Result<()> {
+    fn handle_event(&mut self, event: &Event<()>) -> Result<()> {
+        match event {
+            Event::WindowEvent { event, .. } => {
+                self.egui.handle_event(&event);
+            }
+            _ => {}
+        }
+
         Ok(())
+    }
+
+    fn ui(&mut self, window: &Window) -> egui::FullOutput {
+        self.egui.begin_frame(window);
+
+        egui::Window::new("voices (very Loud)").show(&self.egui.context(), |ui| {
+            ui.horizontal(|ui| {
+                ui.label("Location:");
+                ui.text_edit_singleline(&mut String::from("head"));
+            });
+            ui.label("status: Screaming");
+        });
+
+        self.egui.end_frame(window)
     }
 }
 
@@ -300,7 +468,7 @@ impl AppRunner {
             .name(name)
             .validation(true)
             .present_mode(vk::PresentModeKHR::MAILBOX)
-            .scratch_size(1 * 1024u64) // 1 KiB scratch memory per buffer type per frame
+            .scratch_size(1024 * 1024u64) // 1 MiB scratch memory per buffer type per frame
             .gpu(GPURequirements {
                 dedicated: false,
                 min_video_memory: 1 * 1024 * 1024 * 1024, // 1 GiB.
@@ -358,13 +526,13 @@ impl AppRunner {
         }
     }
 
-    fn frame(&mut self, app: &mut App, window: &Window) -> Result<()> {
+    fn frame(&mut self, app: &mut App, window: &Window, ui_data: egui::FullOutput) -> Result<()> {
         let ctx = self.make_context();
         let frame = self.vk.frame.as_mut().unwrap();
         let surface = self.vk.surface.as_ref().unwrap();
         block_on(
             frame.new_frame(self.vk.exec.clone(), window, surface, |ifc| {
-                app.frame(ctx, ifc)
+                app.frame(ctx, ifc, ui_data)
             }),
         )?;
 
@@ -391,6 +559,8 @@ impl AppRunner {
                 }
             }
 
+            let ui_data = app.as_mut().map(|app| app.ui(&window)).unwrap_or_default();
+
             // Note that we want to handle events after processing our current frame, so that
             // requesting an exit doesn't attempt to render another frame, which causes
             // sync issues.
@@ -415,7 +585,7 @@ impl AppRunner {
                 Event::RedrawRequested(_) => match app.as_mut() {
                     None => {}
                     Some(app) => {
-                        self.frame(app, &window).unwrap();
+                        self.frame(app, &window, ui_data).unwrap();
                         self.vk.pool.next_frame();
                     }
                 },
@@ -425,7 +595,7 @@ impl AppRunner {
     }
 
     pub fn run(self, window: WindowContext) -> ! {
-        let app = App::new(self.make_context()).unwrap();
+        let app = App::new(self.make_context(), &window.event_loop).unwrap();
         match window {
             window => self.run_windowed(app, window),
         }

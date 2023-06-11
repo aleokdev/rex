@@ -8,8 +8,15 @@ edition = "2021"
 [dependencies]
 anyhow = "1.0.71"
 ash-window = "0.12.0"
+bytemuck = { version = "1.13.1", features = ["derive"] }
+crevice = "0.13.0"
+egui = "0.21.0"
+egui-winit-phobos = "0.2.0"
 futures = "0.3.28"
-glam = "0.24.0"
-phobos = { git = "https://github.com/NotAPenguin0/phobos-rs", rev = "8036bfe8f868fd0dbd8ae79239defe4a79c29236" }
+glam = { version = "0.24.0", features = ["mint"] }
+gltf = "1.2.0"
+mint = "0.5.9"
+phobos = "0.9.0"
 pretty_env_logger = "0.5.0"
+shaderc = "0.8.2"
 winit = "0.28.6"
