@@ -184,13 +184,12 @@ impl App {
         let fragment = ShaderCreateInfo::from_spirv(vk::ShaderStageFlags::FRAGMENT, frag_code);
 
         let pci = PipelineBuilder::new("composite".to_string())
-            .vertex_input(0, vk::VertexInputRate::VERTEX)
             .dynamic_states(&[vk::DynamicState::VIEWPORT, vk::DynamicState::SCISSOR])
             .blend_additive_unmasked(
                 vk::BlendFactor::SRC_ALPHA,
                 vk::BlendFactor::ONE_MINUS_SRC_ALPHA,
+                vk::BlendFactor::ONE_MINUS_DST_ALPHA,
                 vk::BlendFactor::ONE,
-                vk::BlendFactor::ZERO,
             )
             .cull_mask(vk::CullModeFlags::NONE)
             .attach_shader(vertex)
@@ -270,6 +269,17 @@ impl App {
             )?,
         };
 
+        let mut fonts = egui::FontDefinitions::empty();
+        fonts.font_data.insert(
+            "test_font".into(),
+            egui::FontData::from_static(include_bytes!("../data/DejaVuSans.ttf")),
+        );
+        fonts
+            .families
+            .get_mut(&egui::FontFamily::Proportional)
+            .unwrap()
+            .insert(0, "test_font".into());
+
         let egui = EguiIntegration::new(
             800,
             600,
@@ -294,7 +304,7 @@ impl App {
         &mut self,
         ctx: Context,
         ifc: InFlightContext,
-        ui_data: egui::FullOutput,
+        window: &Window,
     ) -> anyhow::Result<SubmitBatch<All>> {
         // Define a virtual resource pointing to the swapchain
         let swap = image!("swapchain");
@@ -326,7 +336,7 @@ impl App {
                     stencil: 0,
                 },
             )?
-            .execute_fn(|mut cmd, ifc, _bindings, _| {
+            .execute_fn(|mut cmd, pool, _bindings, _| {
                 let model = Mat4::from_rotation_x(self.time);
                 let uniforms = Uniforms {
                     mvp: (Mat4::perspective_rh(60.0f32.to_radians(), 800.0 / 600.0, 0.1, 100.0)
@@ -339,7 +349,7 @@ impl App {
                         .into(),
                     normal: model.inverse().transpose().into(),
                 };
-                let mut scratch = ifc.allocate_scratch_ubo(Uniforms::std140_size_static() as _)?;
+                let mut scratch = pool.allocate_scratch_ubo(Uniforms::std140_size_static() as _)?;
                 scratch
                     .mapped_slice()?
                     .copy_from_slice(uniforms.as_std140().as_bytes());
@@ -355,6 +365,15 @@ impl App {
                 Ok(cmd)
             })
             .build();
+
+        self.egui.begin_frame(window);
+
+        egui::Window::new("voices (very Loud)").show(&self.egui.context(), |ui| {
+            ui.label("TEST");
+            ui.button("clik me");
+        });
+
+        let ui_data = self.egui.end_frame(window);
 
         let egui_pass = self.egui.paint(
             &[],
@@ -372,7 +391,7 @@ impl App {
             .clear_color_attachment(&swap, ClearColor::Float([0.0, 0.0, 0.0, 1.0]))?
             .sample_image(&color, vk::PipelineStageFlags2::FRAGMENT_SHADER)
             .sample_image(&ui, vk::PipelineStageFlags2::FRAGMENT_SHADER)
-            .execute_fn(|mut cmd, ifc, bindings, _| {
+            .execute_fn(|mut cmd, pool, bindings, _| {
                 cmd = cmd
                     .bind_graphics_pipeline("composite")?
                     .full_viewport_scissor()
@@ -435,20 +454,6 @@ impl App {
 
         Ok(())
     }
-
-    fn ui(&mut self, window: &Window) -> egui::FullOutput {
-        self.egui.begin_frame(window);
-
-        egui::Window::new("voices (very Loud)").show(&self.egui.context(), |ui| {
-            ui.horizontal(|ui| {
-                ui.label("Location:");
-                ui.text_edit_singleline(&mut String::from("head"));
-            });
-            ui.label("status: Screaming");
-        });
-
-        self.egui.end_frame(window)
-    }
 }
 
 struct AppRunner {
@@ -468,7 +473,7 @@ impl AppRunner {
             .name(name)
             .validation(true)
             .present_mode(vk::PresentModeKHR::MAILBOX)
-            .scratch_size(1024 * 1024u64) // 1 MiB scratch memory per buffer type per frame
+            .scratch_size(8 * 1024 * 1024u64) // 8 MiB scratch memory per buffer type per frame
             .gpu(GPURequirements {
                 dedicated: false,
                 min_video_memory: 1 * 1024 * 1024 * 1024, // 1 GiB.
@@ -526,13 +531,13 @@ impl AppRunner {
         }
     }
 
-    fn frame(&mut self, app: &mut App, window: &Window, ui_data: egui::FullOutput) -> Result<()> {
+    fn frame(&mut self, app: &mut App, window: &Window) -> Result<()> {
         let ctx = self.make_context();
         let frame = self.vk.frame.as_mut().unwrap();
         let surface = self.vk.surface.as_ref().unwrap();
         block_on(
             frame.new_frame(self.vk.exec.clone(), window, surface, |ifc| {
-                app.frame(ctx, ifc, ui_data)
+                app.frame(ctx, ifc, window)
             }),
         )?;
 
@@ -559,8 +564,6 @@ impl AppRunner {
                 }
             }
 
-            let ui_data = app.as_mut().map(|app| app.ui(&window)).unwrap_or_default();
-
             // Note that we want to handle events after processing our current frame, so that
             // requesting an exit doesn't attempt to render another frame, which causes
             // sync issues.
@@ -585,7 +588,7 @@ impl AppRunner {
                 Event::RedrawRequested(_) => match app.as_mut() {
                     None => {}
                     Some(app) => {
-                        self.frame(app, &window, ui_data).unwrap();
+                        self.frame(app, &window).unwrap();
                         self.vk.pool.next_frame();
                     }
                 },
