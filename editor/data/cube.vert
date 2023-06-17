@@ -7,13 +7,17 @@ layout(location = 2) in vec2 inUV;
 layout(location = 0) out vec3 outColor;
 layout(location = 1) out vec3 outNormal;
 
-layout(set = 0, binding = 0) uniform Uniforms {
-	mat4 mvp;
+layout(set = 0, binding = 0) uniform CameraUniforms {
+	mat4 vp;
+} cameraUniforms;
+
+layout(set = 1, binding = 0) uniform ModelUniforms {
+	mat4 model;
 	mat4 normal;
-} uniforms;
+} modelUniforms;
 
 void main() {
-	gl_Position = uniforms.mvp * vec4(inPosition, 1.0);
+	gl_Position = modelUniforms.model * cameraUniforms.vp * vec4(inPosition, 1.0);
 	outColor = vec3(inUV, 0.0);
-	outNormal = mat3(uniforms.normal) * inNormal;
+	outNormal = mat3(modelUniforms.normal) * inNormal;
 }

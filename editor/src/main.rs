@@ -5,13 +5,14 @@ use futures::executor::block_on;
 use phobos::vk::{AttachmentLoadOp, ClearDepthStencilValue, CompareOp, IndexType};
 use phobos::{pool::ResourcePool, prelude::*};
 use std::cell::OnceCell;
+use std::collections::HashMap;
 use std::fs::File;
 use std::fs::{self, read_to_string};
 use std::io::{Read, Write};
 use std::path::Path;
 
 use anyhow::bail;
-use glam::{Mat4, Vec3};
+use glam::{Mat4, Quat, Vec3};
 use winit::event::{
     ElementState, Event, MouseButton, MouseScrollDelta, VirtualKeyCode, WindowEvent,
 };
@@ -101,6 +102,58 @@ pub struct VulkanContext {
     pub instance: Instance,
 }
 
+#[repr(C)]
+#[derive(Copy, Clone, Pod, Zeroable)]
+struct GpuVertex {
+    pub pos: [f32; 3],
+    pub normal: [f32; 3],
+    pub uv: [f32; 2],
+}
+
+struct Mesh {
+    pub vertices: Buffer,
+    pub indices: Buffer,
+    pub index_count: u64,
+}
+
+impl Mesh {
+    pub fn load_gltf(mut ctx: Context, path: impl AsRef<Path>) -> anyhow::Result<Self> {
+        let (doc, bufs, images) = gltf::import(path)?;
+        let primitive0 = doc.meshes().next().unwrap().primitives().next().unwrap();
+        let mesh_reader = primitive0.reader(|b| Some(&bufs[b.index()].0));
+        let vertex_data: Vec<_> = mesh_reader
+            .read_positions()
+            .unwrap()
+            .zip(mesh_reader.read_normals().unwrap())
+            .zip(mesh_reader.read_tex_coords(0).unwrap().into_f32())
+            .map(|((pos, normal), uv)| GpuVertex { pos, normal, uv })
+            .collect();
+        let index_data: Vec<_> = mesh_reader.read_indices().unwrap().into_u32().collect();
+
+        let vertices = staged_buffer_upload(
+            ctx.clone(),
+            &vertex_data,
+            vk::BufferUsageFlags::VERTEX_BUFFER,
+        )?;
+        let indices = staged_buffer_upload(ctx, &index_data, vk::BufferUsageFlags::INDEX_BUFFER)?;
+
+        Ok(Mesh {
+            vertices,
+            indices,
+            index_count: index_data.len() as _,
+        })
+    }
+}
+
+#[repr(transparent)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+struct MeshHandle(pub usize);
+
+struct Object {
+    pub mesh: MeshHandle,
+    pub transform: Mat4,
+}
+
 struct Resources {
     pub offscreen: Image,
     pub offscreen_view: ImageView,
@@ -109,8 +162,19 @@ struct Resources {
     pub ui: Image,
     pub ui_view: ImageView,
     pub sampler: Sampler,
-    pub vertex_buffer: Buffer,
-    pub index_buffer: Buffer,
+    pub meshes: Vec<Mesh>,
+    pub objects: Vec<Object>,
+}
+
+impl Resources {
+    pub fn push_mesh(&mut self, mesh: Mesh) -> MeshHandle {
+        self.meshes.push(mesh);
+        MeshHandle(self.meshes.len() - 1)
+    }
+
+    pub fn mesh(&self, handle: MeshHandle) -> &Mesh {
+        self.meshes.get(handle.0).expect("invalid mesh")
+    }
 }
 
 #[derive(Clone)]
@@ -228,28 +292,9 @@ impl App {
             vk::SampleCountFlags::TYPE_1,
         )?;
 
-        #[repr(C)]
-        #[derive(Copy, Clone, Pod, Zeroable)]
-        struct GpuVertex {
-            pub pos: [f32; 3],
-            pub normal: [f32; 3],
-            pub uv: [f32; 2],
-        }
-
         // bleeding edge advanced GLTF mesh importer
-        let (doc, bufs, images) = gltf::import("data/cube.gltf")?;
-        let primitive0 = doc.meshes().next().unwrap().primitives().next().unwrap();
-        let mesh_reader = primitive0.reader(|b| Some(&bufs[b.index()].0));
-        let verts: Vec<_> = mesh_reader
-            .read_positions()
-            .unwrap()
-            .zip(mesh_reader.read_normals().unwrap())
-            .zip(mesh_reader.read_tex_coords(0).unwrap().into_f32())
-            .map(|((pos, normal), uv)| GpuVertex { pos, normal, uv })
-            .collect();
-        let inds: Vec<_> = mesh_reader.read_indices().unwrap().into_u32().collect();
 
-        let resources = Resources {
+        let mut resources = Resources {
             offscreen_view: image.view(vk::ImageAspectFlags::COLOR)?,
             offscreen: image,
             depth_view: depth.view(vk::ImageAspectFlags::DEPTH)?,
@@ -257,17 +302,16 @@ impl App {
             ui_view: ui.view(vk::ImageAspectFlags::COLOR)?,
             ui,
             sampler: Sampler::default(ctx.device.clone())?,
-            vertex_buffer: staged_buffer_upload(
-                ctx.clone(),
-                &verts,
-                vk::BufferUsageFlags::VERTEX_BUFFER,
-            )?,
-            index_buffer: staged_buffer_upload(
-                ctx.clone(),
-                inds.as_slice(),
-                vk::BufferUsageFlags::INDEX_BUFFER,
-            )?,
+            meshes: vec![],
+            objects: vec![],
         };
+
+        let cube_mesh = resources.push_mesh(Mesh::load_gltf(ctx.clone(), "data/cube.gltf")?);
+
+        resources.objects.push(Object {
+            mesh: cube_mesh,
+            transform: Mat4::from_scale_rotation_translation(Vec3::ONE, Quat::IDENTITY, Vec3::ZERO),
+        });
 
         let mut fonts = egui::FontDefinitions::empty();
         fonts.font_data.insert(
@@ -318,8 +362,13 @@ impl App {
         let mut pool = LocalPool::new(ctx.pool.clone())?;
 
         #[derive(AsStd140)]
-        struct Uniforms {
-            pub mvp: mint::ColumnMatrix4<f32>,
+        struct CameraUniforms {
+            pub vp: mint::ColumnMatrix4<f32>,
+        }
+
+        #[derive(AsStd140)]
+        struct ModelUniforms {
+            pub model: mint::ColumnMatrix4<f32>,
             pub normal: mint::ColumnMatrix4<f32>,
         }
 
@@ -338,30 +387,47 @@ impl App {
             )?
             .execute_fn(|mut cmd, pool, _bindings, _| {
                 let model = Mat4::from_rotation_x(self.time);
-                let uniforms = Uniforms {
-                    mvp: (Mat4::perspective_rh(60.0f32.to_radians(), 800.0 / 600.0, 0.1, 100.0)
+                let camera_uniforms = CameraUniforms {
+                    vp: (Mat4::perspective_rh(60.0f32.to_radians(), 800.0 / 600.0, 0.1, 100.0)
                         * Mat4::look_at_rh(
                             Vec3::new(2.0, -2.0, 2.0),
                             Vec3::ZERO,
                             Vec3::new(0.0, -1.0, 0.0),
-                        )
-                        * model)
-                        .into(),
-                    normal: model.inverse().transpose().into(),
+                        ))
+                    .into(),
                 };
-                let mut scratch = pool.allocate_scratch_ubo(Uniforms::std140_size_static() as _)?;
+                let mut scratch =
+                    pool.allocate_scratch_ubo(CameraUniforms::std140_size_static() as _)?;
                 scratch
                     .mapped_slice()?
-                    .copy_from_slice(uniforms.as_std140().as_bytes());
+                    .copy_from_slice(camera_uniforms.as_std140().as_bytes());
 
                 // Our pass will render a fullscreen quad that 'clears' the screen, just so we can test pipeline creation
                 cmd = cmd
-                    .bind_vertex_buffer(0, &self.resources.vertex_buffer.view_full())
-                    .bind_index_buffer(&self.resources.index_buffer.view_full(), IndexType::UINT32)
                     .bind_graphics_pipeline("offscreen")?
                     .bind_uniform_buffer(0, 0, &scratch)?
-                    .full_viewport_scissor()
-                    .draw_indexed(36, 1, 0, 0, 0)?;
+                    .full_viewport_scissor();
+
+                for obj in &self.resources.objects {
+                    let model_uniforms = ModelUniforms {
+                        model: obj.transform.into(),
+                        normal: obj.transform.inverse().transpose().into(),
+                    };
+
+                    let mut obj_scratch =
+                        pool.allocate_scratch_ubo(ModelUniforms::std140_size_static() as _)?;
+                    obj_scratch
+                        .mapped_slice()?
+                        .copy_from_slice(model_uniforms.as_std140().as_bytes());
+
+                    let mesh = self.resources.mesh(obj.mesh);
+                    cmd = cmd
+                        .bind_vertex_buffer(0, &mesh.vertices.view_full())
+                        .bind_index_buffer(&mesh.indices.view_full(), IndexType::UINT32)
+                        .bind_uniform_buffer(1, 0, &obj_scratch)?
+                        .draw_indexed(mesh.index_count as _, 1, 0, 0, 0)?;
+                }
+
                 Ok(cmd)
             })
             .build();
