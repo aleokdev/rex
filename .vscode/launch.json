@@ -7,6 +7,27 @@
         {
             "type": "lldb",
             "request": "launch",
+            "name": "Debug executable 'editor'",
+            "cargo": {
+                "args": [
+                    "build",
+                    "--bin=editor",
+                    "--package=editor"
+                ],
+                "filter": {
+                    "name": "editor",
+                    "kind": "bin"
+                }
+            },
+            "args": [],
+            "cwd": "${workspaceFolder}/editor",
+            "env": {
+                "RUST_LOG": "editor,rex=info"
+            }
+        },
+        {
+            "type": "lldb",
+            "request": "launch",
             "name": "Debug executable 'visualizer'",
             "cargo": {
                 "args": [

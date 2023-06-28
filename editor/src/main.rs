@@ -455,8 +455,14 @@ impl App {
         let composite_pass = PassBuilder::render("composite")
             .color([0.0, 1.0, 0.0, 1.0])
             .clear_color_attachment(&swap, ClearColor::Float([0.0, 0.0, 0.0, 1.0]))?
-            .sample_image(&color, vk::PipelineStageFlags2::FRAGMENT_SHADER)
-            .sample_image(&ui, vk::PipelineStageFlags2::FRAGMENT_SHADER)
+            .sample_image(
+                offscreen_pass.output(&color).unwrap(),
+                vk::PipelineStageFlags2::FRAGMENT_SHADER,
+            )
+            .sample_image(
+                egui_pass.output(&ui).unwrap(),
+                vk::PipelineStageFlags2::FRAGMENT_SHADER,
+            )
             .execute_fn(|mut cmd, pool, bindings, _| {
                 cmd = cmd
                     .bind_graphics_pipeline("composite")?
